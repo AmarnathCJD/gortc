@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"os/exec"
 	"time"
@@ -42,8 +41,8 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 		return fmt.Errorf("create ogg reader: %w", err)
 	}
 
-	seq := uint16(rand.Uint32())
-	ts := rand.Uint32()
+	cur, seq, ts := loadCursor(ssrc)
+	defer func() { saveCursor(cur, seq, ts) }()
 	start := time.Now()
 	var idx int64
 

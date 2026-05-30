@@ -19,6 +19,7 @@ type track struct {
 
 type session struct {
 	mu       sync.Mutex
+	mgr      *manager
 	chatID   int64
 	call     *gortc.Call
 	queue    []track
@@ -46,7 +47,7 @@ func (m *manager) get(chatID int64) *session {
 	defer m.mu.Unlock()
 	s, ok := m.sessions[chatID]
 	if !ok {
-		s = &session{chatID: chatID, volume: 100}
+		s = &session{mgr: m, chatID: chatID, volume: 100}
 		m.sessions[chatID] = s
 	}
 
@@ -97,13 +98,14 @@ func (s *session) startNext() {
 	if len(s.queue) == 0 {
 		s.playing = false
 		s.current = nil
-		hadVideo := s.hadVideo
 		s.hadVideo = false
 		call := s.call
+		s.call = nil
 		s.mu.Unlock()
-		if hadVideo && call != nil {
-			_ = call.SetVideoStopped(true)
+		if call != nil {
+			_ = call.Leave()
 		}
+		s.mgr.drop(s.chatID)
 
 		return
 	}

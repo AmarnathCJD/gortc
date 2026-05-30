@@ -3,7 +3,6 @@ package media
 import (
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"time"
 
@@ -48,8 +47,8 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 	}
 	tsStep := uint32(float64(vp8ClockRate) * frameDur.Seconds())
 
-	seq := uint16(rand.Uint32())
-	ts := rand.Uint32()
+	cur, seq, ts := loadCursor(ssrc)
+	defer func() { saveCursor(cur, seq, ts) }()
 	payloader := &codecs.VP8Payloader{}
 	const mtu = 1200
 
