@@ -1,0 +1,31 @@
+# Vendored deps (reproducible via go mod vendor)
+vendor/
+
+# Reference clone, not our code
+_ntgcalls_ref/
+
+# Downloaded videos
+*.webm
+*.mp4
+*.mkv
+
+# Telegram session file - secret
+session.dat
+cache_*.db
+
+# Generated audio/video artifacts
+test_tone.ogg
+pavazha_malli.ogg
+source.webm
+*.ivf
+
+# Logs and traces
+*.log
+*.etl
+*.pcapng
+
+*.exe
+*.env
+*.dat
+*.session
+examples/musicbot/downloads/
