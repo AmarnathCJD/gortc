@@ -12,12 +12,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"github.com/amarnathcjd/gortc/webrtc"
-	stunx "github.com/amarnathcjd/gortc/webrtc/ice/internal/stun"
-	"github.com/amarnathcjd/gortc/webrtc/ice/internal/taskloop"
-	"github.com/amarnathcjd/gortc/webrtc/logging"
-	"github.com/amarnathcjd/gortc/webrtc/stun"
-	"github.com/amarnathcjd/gortc/webrtc/transport"
 	"math"
 	"net"
 	"net/netip"
@@ -30,6 +24,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/amarnathcjd/gortc/webrtc"
+	stunx "github.com/amarnathcjd/gortc/webrtc/ice/internal/stun"
+	"github.com/amarnathcjd/gortc/webrtc/ice/internal/taskloop"
+	"github.com/amarnathcjd/gortc/webrtc/logging"
+	"github.com/amarnathcjd/gortc/webrtc/stun"
+	"github.com/amarnathcjd/gortc/webrtc/transport"
 
 	"github.com/google/uuid"
 	"golang.org/x/net/dns/dnsmessage"
@@ -4921,121 +4922,70 @@ func containsCandidateType(candidateType CandidateType, candidateTypeList []Cand
 }
 
 var (
-	ErrUnknownType = errors.New("Unknown")
-
-	ErrSchemeType = errors.New("unknown scheme type")
-
-	ErrSTUNQuery = errors.New("queries not supported in STUN address")
-
-	ErrInvalidQuery = errors.New("invalid query")
-
-	ErrHost = errors.New("invalid hostname")
-
-	ErrPort = errors.New("invalid port")
-
-	ErrLocalUfragInsufficientBits = errors.New("local username fragment is less than 24 bits long")
-
-	ErrLocalPwdInsufficientBits = errors.New("local password is less than 128 bits long")
-
-	ErrProtoType = errors.New("invalid transport protocol type")
-
-	ErrClosed = taskloop.ErrClosed
-
-	ErrNoCandidatePairs = errors.New("no candidate pairs available")
-
-	ErrCanceledByCaller = errors.New("connecting canceled by caller")
-
-	ErrMultipleStart = errors.New("attempted to start agent twice")
-
-	ErrRemoteUfragEmpty = errors.New("remote ufrag is empty")
-
-	ErrRemotePwdEmpty = errors.New("remote pwd is empty")
-
-	ErrNoOnCandidateHandler = errors.New("no OnCandidate provided")
-
-	ErrMultipleGatherAttempted = errors.New("attempting to gather candidates during gathering state")
-
-	ErrUsernameEmpty = errors.New("username is empty")
-
-	ErrPasswordEmpty = errors.New("password is empty")
-
-	ErrAddressParseFailed = errors.New("failed to parse address")
-
-	ErrLiteUsingNonHostCandidates = errors.New("lite agents must only use host candidates")
-
-	ErrUselessUrlsProvided = errors.New("agent does not need URL with selected candidate types")
-
-	ErrUnsupportedNAT1To1IPCandidateType = errors.New("unsupported address rewrite candidate type")
-
+	ErrUnknownType                            = errors.New("Unknown")
+	ErrSchemeType                             = errors.New("unknown scheme type")
+	ErrSTUNQuery                              = errors.New("queries not supported in STUN address")
+	ErrInvalidQuery                           = errors.New("invalid query")
+	ErrHost                                   = errors.New("invalid hostname")
+	ErrPort                                   = errors.New("invalid port")
+	ErrLocalUfragInsufficientBits             = errors.New("local username fragment is less than 24 bits long")
+	ErrLocalPwdInsufficientBits               = errors.New("local password is less than 128 bits long")
+	ErrProtoType                              = errors.New("invalid transport protocol type")
+	ErrClosed                                 = taskloop.ErrClosed
+	ErrNoCandidatePairs                       = errors.New("no candidate pairs available")
+	ErrCanceledByCaller                       = errors.New("connecting canceled by caller")
+	ErrMultipleStart                          = errors.New("attempted to start agent twice")
+	ErrRemoteUfragEmpty                       = errors.New("remote ufrag is empty")
+	ErrRemotePwdEmpty                         = errors.New("remote pwd is empty")
+	ErrNoOnCandidateHandler                   = errors.New("no OnCandidate provided")
+	ErrMultipleGatherAttempted                = errors.New("attempting to gather candidates during gathering state")
+	ErrUsernameEmpty                          = errors.New("username is empty")
+	ErrPasswordEmpty                          = errors.New("password is empty")
+	ErrAddressParseFailed                     = errors.New("failed to parse address")
+	ErrLiteUsingNonHostCandidates             = errors.New("lite agents must only use host candidates")
+	ErrUselessUrlsProvided                    = errors.New("agent does not need URL with selected candidate types")
+	ErrUnsupportedNAT1To1IPCandidateType      = errors.New("unsupported address rewrite candidate type")
 	ErrUnsupportedAddressRewriteCandidateType = ErrUnsupportedNAT1To1IPCandidateType
-
-	ErrInvalidNAT1To1IPMapping = errors.New("invalid address rewrite mapping")
-
-	ErrInvalidAddressRewriteMapping = ErrInvalidNAT1To1IPMapping
-
-	ErrExternalMappedIPNotFound = errors.New("external mapped IP not found")
-
-	ErrMulticastDNSWithNAT1To1IPMapping = errors.New(
+	ErrInvalidNAT1To1IPMapping                = errors.New("invalid address rewrite mapping")
+	ErrInvalidAddressRewriteMapping           = ErrInvalidNAT1To1IPMapping
+	ErrExternalMappedIPNotFound               = errors.New("external mapped IP not found")
+	ErrMulticastDNSWithNAT1To1IPMapping       = errors.New(
 		"mDNS gathering cannot be used with address rewrite for host candidate",
 	)
-
-	ErrMulticastDNSWithAddressRewrite = ErrMulticastDNSWithNAT1To1IPMapping
-
-	ErrIneffectiveNAT1To1IPMappingHost = errors.New("address rewrite for host candidate ineffective")
-
-	ErrIneffectiveAddressRewriteHost = ErrIneffectiveNAT1To1IPMappingHost
-
+	ErrMulticastDNSWithAddressRewrite   = ErrMulticastDNSWithNAT1To1IPMapping
+	ErrIneffectiveNAT1To1IPMappingHost  = errors.New("address rewrite for host candidate ineffective")
+	ErrIneffectiveAddressRewriteHost    = ErrIneffectiveNAT1To1IPMappingHost
 	ErrIneffectiveNAT1To1IPMappingSrflx = errors.New("address rewrite for srflx candidate ineffective")
-
-	ErrIneffectiveAddressRewriteSrflx = ErrIneffectiveNAT1To1IPMappingSrflx
-
-	ErrInvalidMulticastDNSHostName = errors.New(
+	ErrIneffectiveAddressRewriteSrflx   = ErrIneffectiveNAT1To1IPMappingSrflx
+	ErrInvalidMulticastDNSHostName      = errors.New(
 		"invalid mDNS HostName, must end with .local and can only contain a single '.'",
 	)
-
-	ErrRunCanceled = errors.New("run was canceled by done")
-
-	ErrTCPRemoteAddrAlreadyExists = errors.New("conn with same remote addr already exists")
-
-	ErrUnknownCandidateTyp = errors.New("unknown candidate typ")
-
-	ErrDetermineNetworkType = errors.New("unable to determine networkType")
-
+	ErrRunCanceled                       = errors.New("run was canceled by done")
+	ErrTCPRemoteAddrAlreadyExists        = errors.New("conn with same remote addr already exists")
+	ErrUnknownCandidateTyp               = errors.New("unknown candidate typ")
+	ErrDetermineNetworkType              = errors.New("unable to determine networkType")
 	ErrOnlyControllingAgentCanRenominate = errors.New("only controlling agent can renominate")
-
-	ErrRenominationNotEnabled = errors.New("renomination is not enabled")
-
-	ErrCandidatePairNotFound = errors.New("candidate pair not found")
-
-	ErrCandidatePairNotSucceeded = errors.New("candidate pair not in succeeded state")
-
-	ErrInvalidNominationAttribute = errors.New("invalid nomination attribute type")
-
-	ErrInvalidNominationValueGenerator = errors.New("nomination value generator cannot be nil")
-
-	ErrInvalidNetworkMonitorInterval = errors.New("network monitor interval must be greater than 0")
-
-	ErrAgentOptionNotUpdatable = errors.New("option can only be set during agent construction")
-
-	errAttributeTooShortICECandidate = errors.New("attribute not long enough to be ICE candidate")
-	errGetXorMappedAddrResponse      = errors.New("failed to get XOR-MAPPED-ADDRESS response")
-	errInvalidAddress                = errors.New("invalid address")
-	errNotImplemented                = errors.New("not implemented yet")
-	errNoXorAddrMapping              = errors.New("no address mapping")
-	errParseFoundation               = errors.New("failed to parse foundation")
-	errParseComponent                = errors.New("failed to parse component")
-	errParsePort                     = errors.New("failed to parse port")
-	errParsePriority                 = errors.New("failed to parse priority")
-	errParseRelatedAddr              = errors.New("failed to parse related addresses")
-	errParseExtension                = errors.New("failed to parse extension")
-	errParseTCPType                  = errors.New("failed to parse TCP type")
-	errUDPMuxDisabled                = errors.New("UDPMux is not enabled")
-	errUnknownRole                   = errors.New("unknown role")
-	errWriteSTUNMessage              = errors.New("failed to send STUN message")
-	errWriteSTUNMessageToIceConn     = errors.New("failed to write STUN message to ICE connection")
-	errXORMappedAddrTimeout          = errors.New("timeout while waiting for XORMappedAddr")
-	errFailedToCastUDPAddr           = errors.New("failed to cast net.Addr to net.UDPAddr")
-	errInvalidIPAddress              = errors.New("invalid ip address")
+	ErrRenominationNotEnabled            = errors.New("renomination is not enabled")
+	ErrCandidatePairNotFound             = errors.New("candidate pair not found")
+	ErrCandidatePairNotSucceeded         = errors.New("candidate pair not in succeeded state")
+	ErrInvalidNominationAttribute        = errors.New("invalid nomination attribute type")
+	ErrInvalidNominationValueGenerator   = errors.New("nomination value generator cannot be nil")
+	ErrInvalidNetworkMonitorInterval     = errors.New("network monitor interval must be greater than 0")
+	ErrAgentOptionNotUpdatable           = errors.New("option can only be set during agent construction")
+	errAttributeTooShortICECandidate     = errors.New("attribute not long enough to be ICE candidate")
+	errInvalidAddress                    = errors.New("invalid address")
+	errParseFoundation                   = errors.New("failed to parse foundation")
+	errParseComponent                    = errors.New("failed to parse component")
+	errParsePort                         = errors.New("failed to parse port")
+	errParsePriority                     = errors.New("failed to parse priority")
+	errParseRelatedAddr                  = errors.New("failed to parse related addresses")
+	errParseExtension                    = errors.New("failed to parse extension")
+	errParseTCPType                      = errors.New("failed to parse TCP type")
+	errUDPMuxDisabled                    = errors.New("UDPMux is not enabled")
+	errUnknownRole                       = errors.New("unknown role")
+	errWriteSTUNMessageToIceConn         = errors.New("failed to write STUN message to ICE connection")
+	errFailedToCastUDPAddr               = errors.New("failed to cast net.Addr to net.UDPAddr")
+	errInvalidIPAddress                  = errors.New("invalid ip address")
 )
 
 var errInvalidNAT1To1IPMapping = errors.New("invalid NAT1To1 IP mapping")
@@ -7147,41 +7097,6 @@ type AllConnsGetter interface {
 	GetAllConns(ufrag string, isIPv6 bool, localIP net.IP) ([]net.PacketConn, error)
 }
 
-type TCPMuxParams struct {
-	Listener                     net.Listener
-	Logger                       logging.LeveledLogger
-	ReadBufferSize               int
-	WriteBufferSize              int
-	FirstStunBindTimeout         time.Duration
-	AliveDurationForConnFromStun time.Duration
-}
-
-type TCPMuxDefault struct {
-	params *TCPMuxParams
-}
-
-func NewTCPMuxDefault(params TCPMuxParams) *TCPMuxDefault {
-	if params.Logger == nil {
-		params.Logger = logging.NewDefaultLoggerFactory().NewLogger("ice")
-	}
-	return &TCPMuxDefault{params: &params}
-}
-
-func (m *TCPMuxDefault) LocalAddr() net.Addr {
-	if m.params == nil || m.params.Listener == nil {
-		return nil
-	}
-	return m.params.Listener.Addr()
-}
-
-func (m *TCPMuxDefault) GetConnByUfrag(_ string, _ bool, _ net.IP) (net.PacketConn, error) {
-	return nil, ErrGetTransportAddress
-}
-
-func (m *TCPMuxDefault) RemoveConnByUfrag(_ string) {}
-
-func (m *TCPMuxDefault) Close() error { return nil }
-
 type TCPType int
 
 const (
@@ -7825,226 +7740,6 @@ type UniversalUDPMux interface {
 	GetXORMappedAddr(stunAddr net.Addr, deadline time.Duration) (*stun.XORMappedAddress, error)
 	GetRelayedAddr(turnAddr net.Addr, deadline time.Duration) (*net.Addr, error)
 	GetConnForURL(ufrag string, url string, addr net.Addr) (net.PacketConn, error)
-}
-
-type UniversalUDPMuxDefault struct {
-	*UDPMuxDefault
-	params       UniversalUDPMuxParams
-	xorMappedMap map[string]*xorMapped
-}
-
-type UniversalUDPMuxParams struct {
-	Logger                logging.LeveledLogger
-	UDPConn               net.PacketConn
-	XORMappedAddrCacheTTL time.Duration
-	Net                   transport.Net
-}
-
-func NewUniversalUDPMuxDefault(params UniversalUDPMuxParams) *UniversalUDPMuxDefault {
-	if params.Logger == nil {
-		params.Logger = logging.NewDefaultLoggerFactory().NewLogger("ice")
-	}
-	if params.XORMappedAddrCacheTTL == 0 {
-		params.XORMappedAddrCacheTTL = time.Second * 25
-	}
-
-	mux := &UniversalUDPMuxDefault{
-		params:       params,
-		xorMappedMap: make(map[string]*xorMapped),
-	}
-
-	mux.params.UDPConn = &udpConn{
-		PacketConn: params.UDPConn,
-		mux:        mux,
-		logger:     params.Logger,
-	}
-
-	udpMuxParams := UDPMuxParams{
-		Logger:  params.Logger,
-		UDPConn: mux.params.UDPConn,
-		Net:     mux.params.Net,
-	}
-	mux.UDPMuxDefault = NewUDPMuxDefault(udpMuxParams)
-
-	return mux
-}
-
-type udpConn struct {
-	net.PacketConn
-	mux    *UniversalUDPMuxDefault
-	logger logging.LeveledLogger
-}
-
-func (m *UniversalUDPMuxDefault) GetRelayedAddr(net.Addr, time.Duration) (*net.Addr, error) {
-	return nil, errNotImplemented
-}
-
-func (m *UniversalUDPMuxDefault) GetConnForURL(ufrag string, url string, addr net.Addr) (net.PacketConn, error) {
-	return m.UDPMuxDefault.GetConn(fmt.Sprintf("%s%s", ufrag, url), addr)
-}
-
-func (c *udpConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	n, addr, err = c.PacketConn.ReadFrom(p)
-	if err != nil {
-		return n, addr, err
-	}
-
-	if stun.IsMessage(p[:n]) {
-		msg := &stun.Message{
-			Raw: append([]byte{}, p[:n]...),
-		}
-
-		if err = msg.Decode(); err != nil {
-			c.logger.Warnf("Failed to handle decode ICE from %s: %v", addr.String(), err)
-
-			return n, addr, nil
-		}
-
-		udpAddr, ok := addr.(*net.UDPAddr)
-		if !ok {
-
-			return n, addr, err
-		}
-
-		if c.mux.isXORMappedResponse(msg, udpAddr.String()) {
-			err = c.mux.handleXORMappedResponse(udpAddr, msg)
-			if err != nil {
-				c.logger.Debugf("%w: %v", errGetXorMappedAddrResponse, err)
-				err = nil
-			}
-
-			return n, addr, err
-		}
-	}
-
-	return n, addr, err
-}
-
-func (m *UniversalUDPMuxDefault) isXORMappedResponse(msg *stun.Message, stunAddr string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	_, ok := m.xorMappedMap[stunAddr]
-	_, err := msg.Get(stun.AttrXORMappedAddress)
-
-	return err == nil && ok
-}
-
-func (m *UniversalUDPMuxDefault) handleXORMappedResponse(stunAddr *net.UDPAddr, msg *stun.Message) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	mappedAddr, ok := m.xorMappedMap[stunAddr.String()]
-	if !ok {
-		return errNoXorAddrMapping
-	}
-
-	var addr stun.XORMappedAddress
-	if err := addr.GetFrom(msg); err != nil {
-		return err
-	}
-
-	m.xorMappedMap[stunAddr.String()] = mappedAddr
-	mappedAddr.SetAddr(&addr)
-
-	return nil
-}
-
-func (m *UniversalUDPMuxDefault) GetXORMappedAddr(
-	serverAddr net.Addr,
-	deadline time.Duration,
-) (*stun.XORMappedAddress, error) {
-	m.mu.Lock()
-	mappedAddr, ok := m.xorMappedMap[serverAddr.String()]
-
-	if ok {
-		if mappedAddr.expired() {
-			mappedAddr.closeWaiters()
-			delete(m.xorMappedMap, serverAddr.String())
-			ok = false
-		} else if mappedAddr.pending() {
-			ok = false
-		}
-	}
-	m.mu.Unlock()
-	if ok {
-		return mappedAddr.addr, nil
-	}
-
-	waitAddrReceived, err := m.writeSTUN(serverAddr)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errWriteSTUNMessage, err)
-	}
-
-	select {
-	case <-waitAddrReceived:
-
-		m.mu.Lock()
-		mappedAddr := *m.xorMappedMap[serverAddr.String()]
-		m.mu.Unlock()
-		if mappedAddr.addr == nil {
-			return nil, errNoXorAddrMapping
-		}
-
-		return mappedAddr.addr, nil
-	case <-time.After(deadline):
-		return nil, errXORMappedAddrTimeout
-	}
-}
-
-func (m *UniversalUDPMuxDefault) writeSTUN(serverAddr net.Addr) (chan struct{}, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	addrMap, ok := m.xorMappedMap[serverAddr.String()]
-	if !ok {
-		addrMap = &xorMapped{
-			expiresAt:        time.Now().Add(m.params.XORMappedAddrCacheTTL),
-			waitAddrReceived: make(chan struct{}),
-		}
-		m.xorMappedMap[serverAddr.String()] = addrMap
-	}
-
-	req, err := stun.Build(stun.BindingRequest, stun.TransactionID)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err = m.params.UDPConn.WriteTo(req.Raw, serverAddr); err != nil {
-		return nil, err
-	}
-
-	return addrMap.waitAddrReceived, nil
-}
-
-type xorMapped struct {
-	addr             *stun.XORMappedAddress
-	waitAddrReceived chan struct{}
-	expiresAt        time.Time
-}
-
-func (a *xorMapped) closeWaiters() {
-	select {
-	case <-a.waitAddrReceived:
-
-		break
-	default:
-
-		close(a.waitAddrReceived)
-	}
-}
-
-func (a *xorMapped) pending() bool {
-	return a.addr == nil
-}
-
-func (a *xorMapped) expired() bool {
-	return a.expiresAt.Before(time.Now())
-}
-
-func (a *xorMapped) SetAddr(addr *stun.XORMappedAddress) {
-	a.addr = addr
-	a.closeWaiters()
 }
 
 type udpMuxedConnState int

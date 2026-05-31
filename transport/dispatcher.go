@@ -26,7 +26,7 @@ type Dispatcher struct {
 func NewDispatcher(audio, video *webrtc.TrackLocalStaticRTP) *Dispatcher {
 	return &Dispatcher{
 		audioCh: make(chan *rtp.Packet, 64),
-		videoCh: make(chan *rtp.Packet, 512),
+		videoCh: make(chan *rtp.Packet, 2048),
 		stop:    make(chan struct{}),
 		audio:   audio,
 		video:   video,
@@ -63,7 +63,7 @@ func (d *Dispatcher) run() {
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 
-	const videoBudgetPerTick = 2
+	const videoByteBudgetPerTick = 48 * 1024
 
 	for {
 		select {
@@ -84,14 +84,15 @@ func (d *Dispatcher) run() {
 			break
 		}
 
-		for i := 0; i < videoBudgetPerTick; i++ {
+		for budget := videoByteBudgetPerTick; budget > 0; {
 			select {
 			case p := <-d.videoCh:
 				if d.video != nil {
 					_ = d.video.WriteRTP(p)
 				}
+				budget -= len(p.Payload)
 			default:
-				i = videoBudgetPerTick
+				budget = 0
 			}
 		}
 	}

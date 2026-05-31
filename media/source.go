@@ -65,7 +65,7 @@ type EncodeOptions struct {
 
 func (o EncodeOptions) withDefaults() EncodeOptions {
 	if o.VideoBitrateKbps == 0 {
-		o.VideoBitrateKbps = 350
+		o.VideoBitrateKbps = 500
 	}
 	if o.VideoWidth == 0 {
 		o.VideoWidth = 854
@@ -81,6 +81,35 @@ func (o EncodeOptions) withDefaults() EncodeOptions {
 	}
 	if o.Tracks == 0 {
 		o.Tracks = TrackAudio | TrackVideo
+	}
+	return o
+}
+
+
+var (
+	Res480  = EncodeOptions{VideoWidth: 854, VideoHeight: 480, VideoBitrateKbps: 500, VideoFPS: 30}
+	Res720  = EncodeOptions{VideoWidth: 1280, VideoHeight: 720, VideoBitrateKbps: 1500, VideoFPS: 30}
+	Res1080 = EncodeOptions{VideoWidth: 1920, VideoHeight: 1080, VideoBitrateKbps: 3000, VideoFPS: 30}
+)
+
+func (o EncodeOptions) With(override EncodeOptions) EncodeOptions {
+	if override.VideoBitrateKbps != 0 {
+		o.VideoBitrateKbps = override.VideoBitrateKbps
+	}
+	if override.VideoWidth != 0 {
+		o.VideoWidth = override.VideoWidth
+	}
+	if override.VideoHeight != 0 {
+		o.VideoHeight = override.VideoHeight
+	}
+	if override.VideoFPS != 0 {
+		o.VideoFPS = override.VideoFPS
+	}
+	if override.AudioBitrateKbps != 0 {
+		o.AudioBitrateKbps = override.AudioBitrateKbps
+	}
+	if override.Tracks != 0 {
+		o.Tracks = override.Tracks
 	}
 	return o
 }

@@ -13,19 +13,31 @@ import (
 )
 
 type playControl struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	paused   bool
-	stopped  bool
-	elapsed  time.Duration
-	base     time.Duration
-	lastTick time.Time
+	mu      sync.Mutex
+	cond    *sync.Cond
+	paused  bool
+	stopped bool
+	elapsed time.Duration
+	base    time.Duration
+
+	clockStart  time.Time
+	pausedSince time.Time
 }
 
 func newPlayControl(base time.Duration) *playControl {
-	c := &playControl{base: base}
+	c := &playControl{base: base, clockStart: time.Now()}
 	c.cond = sync.NewCond(&c.mu)
 	return c
+}
+
+// target returns the wall-clock instant at which a stream should have emitted
+// streamDur of media, measured from the shared clock origin. Both the audio and
+// video pacers chase this single origin so they never free-run apart. Paused
+// time is excluded because clockStart is advanced by the pause duration on resume.
+func (c *playControl) target(streamDur time.Duration) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.clockStart.Add(streamDur)
 }
 
 func (c *playControl) tick(d time.Duration) {
@@ -52,13 +64,22 @@ func (c *playControl) gate() bool {
 
 func (c *playControl) pause() {
 	c.mu.Lock()
-	c.paused = true
+	if !c.paused {
+		c.paused = true
+		c.pausedSince = time.Now()
+	}
 	c.mu.Unlock()
 }
 
 func (c *playControl) resume() {
 	c.mu.Lock()
-	c.paused = false
+	if c.paused {
+		c.paused = false
+		if !c.pausedSince.IsZero() {
+			c.clockStart = c.clockStart.Add(time.Since(c.pausedSince))
+			c.pausedSince = time.Time{}
+		}
+	}
 	c.mu.Unlock()
 	c.cond.Broadcast()
 }

@@ -49,7 +49,12 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 	cur, seq, ts := loadCursor(ssrc)
 	defer func() { saveCursor(cur, seq, ts) }()
 	start := time.Now()
-	var idx int64
+
+	const defaultSamples = opusClockRate * opusFrameMs / 1000
+
+	var played time.Duration
+	var lastGranule uint64
+	haveGranule := false
 
 	for {
 		if ctrl != nil {
@@ -60,7 +65,7 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 			start = start.Add(time.Since(before))
 		}
 
-		page, _, err := ogg.ParseNextPage()
+		page, header, err := ogg.ParseNextPage()
 		if err == io.EOF {
 			return nil
 		}
@@ -69,6 +74,24 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 		}
 		if bytes.HasPrefix(page, []byte("OpusHead")) || bytes.HasPrefix(page, []byte("OpusTags")) {
 			continue
+		}
+
+		var samples uint64 = defaultSamples
+		if header != nil {
+			g := header.GranulePosition
+			switch {
+			case !haveGranule:
+				haveGranule = true
+				lastGranule = g
+			case g > lastGranule:
+				d := g - lastGranule
+				lastGranule = g
+				if d > 0 && d <= opusClockRate { // sane: <= 1s of audio per page
+					samples = d
+				}
+			default:
+				lastGranule = g
+			}
 		}
 
 		pkt := &rtp.Packet{
@@ -85,12 +108,19 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 		send.SendAudio(pkt)
 
 		seq++
-		ts += opusClockRate * opusFrameMs / 1000
-		idx++
+		ts += uint32(samples)
+		dur := time.Duration(samples) * time.Second / opusClockRate
+		played += dur
 		if ctrl != nil {
-			ctrl.tick(opusFrameMs * time.Millisecond)
+			ctrl.tick(dur)
 		}
-		target := start.Add(time.Duration(idx) * opusFrameMs * time.Millisecond)
+
+		var target time.Time
+		if ctrl != nil {
+			target = ctrl.target(played)
+		} else {
+			target = start.Add(played)
+		}
 		if d := time.Until(target); d > 0 {
 			time.Sleep(d)
 		}

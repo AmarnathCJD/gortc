@@ -97,7 +97,13 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 
 		ts += tsStep
 		frameIdx++
-		target := start.Add(time.Duration(frameIdx) * frameDur)
+		played := time.Duration(frameIdx) * frameDur
+		var target time.Time
+		if ctrl != nil {
+			target = ctrl.target(played)
+		} else {
+			target = start.Add(played)
+		}
 		if d := time.Until(target); d > 0 {
 			time.Sleep(d)
 		}

@@ -52,6 +52,12 @@ const (
 var ErrNotSeekable = media.ErrNotSeekable
 
 var (
+	Res480  = media.Res480
+	Res720  = media.Res720
+	Res1080 = media.Res1080
+)
+
+var (
 	FromFile     = media.FromFile
 	FromURL      = media.FromURL
 	FromReader   = media.FromReader
