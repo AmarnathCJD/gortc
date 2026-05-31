@@ -4851,7 +4851,7 @@ func (pc *PeerConnection) undeclaredRTPMediaProcessor() {
 
 		go func(rtpStream *srtp.ReadStreamSRTP, ssrc SSRC) {
 			if err := pc.handleIncomingSSRC(rtpStream, ssrc); err != nil {
-				pc.log.Errorf(incomingUnhandledRTPSsrc, ssrc, err)
+				pc.log.Debugf(incomingUnhandledRTPSsrc, ssrc, err)
 			}
 			atomic.AddUint64(&simulcastRoutineCount, ^uint64(0))
 		}(srtpReadStream, SSRC(ssrc))

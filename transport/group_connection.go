@@ -254,7 +254,7 @@ func (gc *GroupConnection) Open() error {
 	if err := webrtc.RegisterDefaultInterceptors(m, i); err != nil {
 		return fmt.Errorf("register interceptors: %w", err)
 	}
-	
+
 	i.Add(&logger.RTPDump{Log: gc.log.With("subsystem", "rtp-dump")})
 	i.Add(&MarkerClearInterceptorFactory{})
 	i.Add(&AudioLevelInterceptorFactory{})
