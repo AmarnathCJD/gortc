@@ -1,3 +1,8 @@
+// ────────────────────────────────────────────────────────────────────
+//  gortc · Telegram Group-Call Streaming for Go  ·  © 2026 @amarnathcjd
+//  https://github.com/amarnathcjd/gortc
+// ────────────────────────────────────────────────────────────────────
+
 // Package gortc is a Telegram group-call streaming library built on top of
 // gogram. It joins voice/video group calls and streams audio and video from
 // flexible sources (files, URLs, readers, raw frames, or pre-encoded media).

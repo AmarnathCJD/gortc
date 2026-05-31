@@ -1,7 +1,13 @@
+// ────────────────────────────────────────────────────────────────────
+//  gortc · Telegram Group-Call Streaming for Go  ·  © 2026 @amarnathcjd
+//  https://github.com/amarnathcjd/gortc
+// ────────────────────────────────────────────────────────────────────
+
 package transport
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -922,4 +928,8 @@ func (d stdListenConfig) ListenPacket(ctx context.Context, network, address stri
 
 func (n *StdNet) CreateListenConfig(d *net.ListenConfig) ListenConfig {
 	return stdListenConfig{d}
+}
+
+func XorBytes(dst, a, b []byte) int {
+	return subtle.XORBytes(dst, a, b)
 }

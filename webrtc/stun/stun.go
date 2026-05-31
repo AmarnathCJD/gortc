@@ -1,4 +1,7 @@
-//go:build !debug
+// ────────────────────────────────────────────────────────────────────
+//  gortc · Telegram Group-Call Streaming for Go  ·  © 2026 @amarnathcjd
+//  https://github.com/amarnathcjd/gortc
+// ────────────────────────────────────────────────────────────────────
 
 package stun
 
@@ -873,10 +876,9 @@ var ErrFingerprintMismatch = errors.New("fingerprint check failed")
 
 var Fingerprint FingerprintAttr
 
-const (
-	fingerprintXORValue uint32 = 0x5354554e
-	fingerprintSize            = 4
-)
+const fingerprintXORValue uint32 = 0x5354554e
+
+const fingerprintSize = 4
 
 func FingerprintValue(b []byte) uint32 {
 	return crc32.ChecksumIEEE(b) ^ fingerprintXORValue

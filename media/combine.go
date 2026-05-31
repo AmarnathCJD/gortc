@@ -1,3 +1,8 @@
+// ────────────────────────────────────────────────────────────────────
+//  gortc · Telegram Group-Call Streaming for Go  ·  © 2026 @amarnathcjd
+//  https://github.com/amarnathcjd/gortc
+// ────────────────────────────────────────────────────────────────────
+
 package media
 
 import (
