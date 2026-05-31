@@ -36,6 +36,7 @@ type OggReader struct {
 	bytesReadSuccesfully int64
 	checksumTable        *[256]uint32
 	doChecksum           bool
+	lastSegSizes         []byte
 }
 
 type OggHeader struct {
@@ -253,8 +254,62 @@ func (o *OggReader) ParseNextPage() ([]byte, *OggPageHeader, error) {
 	}
 
 	o.bytesReadSuccesfully += int64(len(header) + len(sizeBuffer) + len(payload))
+	o.lastSegSizes = sizeBuffer
 
 	return payload, pageHeader, nil
+}
+
+// ParseNextPageSegments returns the page's individual packets split per the
+// ogg lacing table (consecutive 255-byte segments belong to the same packet,
+// and the first <255 segment ends it). For Opus, each returned []byte is one
+// Opus packet — what an RTP payload should carry. A packet may be continued
+// on the next page if the last segment is 255; the continuation arrives on
+// the following page's first packet (headerType bit 0x01 indicates that).
+func (o *OggReader) ParseNextPageSegments() ([][]byte, *OggPageHeader, error) {
+	payload, hdr, err := o.ParseNextPage()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	segs := make([][]byte, 0, hdr.segmentsCount)
+	off, start := 0, 0
+	inPacket := false
+	for i := 0; i < int(hdr.segmentsCount); i++ {
+		size := int(o.lastSegmentSizes(i))
+		if !inPacket {
+			start = off
+			inPacket = true
+		}
+		off += size
+		if size < 255 {
+			segs = append(segs, payload[start:off])
+			inPacket = false
+		}
+	}
+	if inPacket {
+		segs = append(segs, payload[start:off])
+	}
+	return segs, hdr, nil
+}
+
+// lastSegmentSizes returns the i-th segment size from the most recent page.
+// We keep a copy on the reader for ParseNextPageSegments to avoid changing
+// the ParseNextPage return signature.
+func (o *OggReader) lastSegmentSizes(i int) byte {
+	if i < 0 || i >= len(o.lastSegSizes) {
+		return 0
+	}
+	return o.lastSegSizes[i]
+}
+
+// LastPageLastSegmentSize returns the size of the final segment of the most
+// recently parsed page (0 if no page has been parsed). A value of 255 means
+// the page's last packet continues onto the next page.
+func (o *OggReader) LastPageLastSegmentSize() byte {
+	if len(o.lastSegSizes) == 0 {
+		return 0
+	}
+	return o.lastSegSizes[len(o.lastSegSizes)-1]
 }
 
 func generateChecksumTable() *[256]uint32 {

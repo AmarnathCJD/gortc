@@ -50,11 +50,10 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 	defer func() { saveCursor(cur, seq, ts) }()
 	start := time.Now()
 
-	const defaultSamples = opusClockRate * opusFrameMs / 1000
+	const samplesPerFrame = opusClockRate * opusFrameMs / 1000 // 960
 
 	var played time.Duration
-	var lastGranule uint64
-	haveGranule := false
+	var pending []byte // packet continued from a previous page
 
 	for {
 		if ctrl != nil {
@@ -65,66 +64,145 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 			start = start.Add(time.Since(before))
 		}
 
-		page, header, err := ogg.ParseNextPage()
+		packets, _, err := ogg.ParseNextPageSegments()
 		if err == io.EOF {
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("parse ogg page: %w", err)
 		}
-		if bytes.HasPrefix(page, []byte("OpusHead")) || bytes.HasPrefix(page, []byte("OpusTags")) {
+		if len(packets) == 0 {
 			continue
 		}
 
-		var samples uint64 = defaultSamples
-		if header != nil {
-			g := header.GranulePosition
-			switch {
-			case !haveGranule:
-				haveGranule = true
-				lastGranule = g
-			case g > lastGranule:
-				d := g - lastGranule
-				lastGranule = g
-				if d > 0 && d <= opusClockRate { // sane: <= 1s of audio per page
-					samples = d
-				}
-			default:
-				lastGranule = g
+		// Stitch any continuation: a packet whose last segment was 255 bytes
+		// resumes on the next page's first packet.
+		if pending != nil {
+			packets[0] = append(pending, packets[0]...)
+			pending = nil
+		}
+		// If this page's final packet ended on a 255-byte segment it continues
+		// onto the next page; defer it.
+		if endsContinued(ogg) {
+			pending = packets[len(packets)-1]
+			packets = packets[:len(packets)-1]
+		}
+
+		for _, pkt := range packets {
+			if len(pkt) == 0 {
+				continue
+			}
+			if bytes.HasPrefix(pkt, []byte("OpusHead")) || bytes.HasPrefix(pkt, []byte("OpusTags")) {
+				continue
+			}
+
+			samples := opusPacketSamples(pkt)
+			if samples == 0 {
+				samples = samplesPerFrame
+			}
+
+			rtpPkt := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					PayloadType:    opusPayloadType,
+					SequenceNumber: seq,
+					Timestamp:      ts,
+					SSRC:           ssrc,
+					Marker:         false,
+				},
+				Payload: append([]byte(nil), pkt...),
+			}
+			send.SendAudio(rtpPkt)
+
+			seq++
+			ts += uint32(samples)
+			dur := time.Duration(samples) * time.Second / opusClockRate
+			played += dur
+			if ctrl != nil {
+				ctrl.tick(dur)
+			}
+
+			var target time.Time
+			if ctrl != nil {
+				target = ctrl.target(played)
+			} else {
+				target = start.Add(played)
+			}
+			if d := time.Until(target); d > 0 {
+				time.Sleep(d)
 			}
 		}
+	}
+}
 
-		pkt := &rtp.Packet{
-			Header: rtp.Header{
-				Version:        2,
-				PayloadType:    opusPayloadType,
-				SequenceNumber: seq,
-				Timestamp:      ts,
-				SSRC:           ssrc,
-				Marker:         false,
-			},
-			Payload: append([]byte(nil), page...),
+// endsContinued reports whether the last segment of the most recent page was
+// 255 bytes — meaning its final packet continues on the next page.
+func endsContinued(o *oggreader.OggReader) bool {
+	return o.LastPageLastSegmentSize() == 255
+}
+
+// opusPacketSamples returns the duration in 48 kHz samples encoded in the TOC
+// byte of an Opus packet (RFC 6716 §3.1). Returns 0 if the packet is too short
+// or the duration is unrecognised.
+func opusPacketSamples(pkt []byte) uint64 {
+	if len(pkt) < 1 {
+		return 0
+	}
+	toc := pkt[0]
+	config := toc >> 3
+	// Frame durations per config (microseconds), per RFC 6716 Table 2.
+	var frameUs uint64
+	switch {
+	case config <= 11: // SILK and Hybrid
+		switch config % 4 {
+		case 0:
+			frameUs = 10000
+		case 1:
+			frameUs = 20000
+		case 2:
+			frameUs = 40000
+		case 3:
+			frameUs = 60000
 		}
-		send.SendAudio(pkt)
-
-		seq++
-		ts += uint32(samples)
-		dur := time.Duration(samples) * time.Second / opusClockRate
-		played += dur
-		if ctrl != nil {
-			ctrl.tick(dur)
-		}
-
-		var target time.Time
-		if ctrl != nil {
-			target = ctrl.target(played)
+	case config <= 15: // Hybrid 10/20 ms
+		if config%2 == 0 {
+			frameUs = 10000
 		} else {
-			target = start.Add(played)
+			frameUs = 20000
 		}
-		if d := time.Until(target); d > 0 {
-			time.Sleep(d)
+	default: // CELT 2.5/5/10/20 ms
+		switch config % 4 {
+		case 0:
+			frameUs = 2500
+		case 1:
+			frameUs = 5000
+		case 2:
+			frameUs = 10000
+		case 3:
+			frameUs = 20000
 		}
 	}
+	if frameUs == 0 {
+		return 0
+	}
+
+	// Frame count from code in lower 2 bits.
+	var frames uint64
+	switch toc & 0x03 {
+	case 0:
+		frames = 1
+	case 1, 2:
+		frames = 2
+	case 3:
+		if len(pkt) < 2 {
+			return 0
+		}
+		frames = uint64(pkt[1] & 0x3F)
+		if frames == 0 {
+			return 0
+		}
+	}
+	return frames * frameUs * opusClockRate / 1_000_000
 }
 
 func GenerateTestTone(filename string, freqHz int, durationSec int) error {
