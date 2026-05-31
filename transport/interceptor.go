@@ -54,7 +54,6 @@ func (a *audioLevelInterceptor) BindLocalStream(info *interceptor.StreamInfo, wr
 	a.mu.Lock()
 	a.streams[info.SSRC] = s
 	a.mu.Unlock()
-
 	return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attrs interceptor.Attributes) (int, error) {
 		if s.hasAudioLevel {
 			// Voice-activity bit (0x80) | level in -dBov (0..127); fixed at -20 dBov.
@@ -66,7 +65,6 @@ func (a *audioLevelInterceptor) BindLocalStream(info *interceptor.StreamInfo, wr
 			abs := (uint64(now.Unix())<<18 | uint64(now.Nanosecond())*uint64(1<<18)/uint64(1e9)) & 0x00FFFFFF
 			_ = header.SetExtension(s.absSendTimeID, []byte{byte(abs >> 16), byte(abs >> 8), byte(abs)})
 		}
-
 		return writer.Write(header, payload, attrs)
 	})
 }
@@ -95,10 +93,8 @@ func (m *markerClearInterceptor) BindLocalStream(info *interceptor.StreamInfo, w
 	if !strings.HasPrefix(info.MimeType, "audio/") {
 		return writer
 	}
-
 	return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attrs interceptor.Attributes) (int, error) {
 		header.Marker = false
-
 		return writer.Write(header, payload, attrs)
 	})
 }

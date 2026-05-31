@@ -63,7 +63,6 @@ func New(client *telegram.Client, opts ...Option) *GroupCall {
 		o(gc)
 	}
 	gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
-
 	return gc
 }
 

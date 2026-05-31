@@ -42,7 +42,6 @@ func (s *Streams) Close() error {
 	if s.close != nil {
 		return s.close()
 	}
-
 	return nil
 }
 
@@ -83,7 +82,6 @@ func (o EncodeOptions) withDefaults() EncodeOptions {
 	if o.Tracks == 0 {
 		o.Tracks = TrackAudio | TrackVideo
 	}
-
 	return o
 }
 
@@ -122,7 +120,6 @@ func ffmpegAudioArgs(input []string, o EncodeOptions) []string {
 		"-f", "ogg",
 		"pipe:1",
 	)
-
 	return args
 }
 
@@ -148,7 +145,6 @@ func ffmpegVideoArgs(input []string, o EncodeOptions) []string {
 		"-f", "ivf",
 		"pipe:1",
 	)
-
 	return args
 }
 
@@ -179,7 +175,6 @@ func probeDuration(src Source) time.Duration {
 	if err != nil {
 		return 0
 	}
-
 	return time.Duration(secs * float64(time.Second))
 }
 
@@ -205,7 +200,6 @@ func (s *transcodeSource) OpenAt(ctx context.Context, offset time.Duration) (*St
 		return nil, ErrNotSeekable
 	}
 	input := []string{"-ss", strconv.FormatFloat(offset.Seconds(), 'f', 3, 64), "-i", s.path}
-
 	return s.open(ctx, input)
 }
 
@@ -220,7 +214,6 @@ func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, e
 				_ = c.Process.Kill()
 			}
 		}
-
 		return nil
 	}
 
@@ -237,7 +230,6 @@ func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, e
 			return nil, err
 		}
 		procs = append(procs, cmd)
-
 		return out, nil
 	}
 
@@ -265,7 +257,6 @@ func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, e
 	}
 
 	st.close = closeAll
-
 	return st, nil
 }
 
@@ -306,7 +297,6 @@ func FromRawPCM(r io.Reader, f RawAudioFormat, opt ...EncodeOptions) Source {
 		"-ac", fmt.Sprintf("%d", f.Channels),
 		"-i", "pipe:0",
 	}
-
 	return &transcodeSource{input: input, stdin: r, opt: o}
 }
 
@@ -334,7 +324,6 @@ func FromRawVideo(r io.Reader, f RawVideoFormat, opt ...EncodeOptions) Source {
 		"-r", fmt.Sprintf("%d", f.FPS),
 		"-i", "pipe:0",
 	}
-
 	return &transcodeSource{input: input, stdin: r, opt: o}
 }
 
@@ -352,7 +341,6 @@ func (s *passthroughSource) Tracks() Track {
 	if s.video != nil {
 		t |= TrackVideo
 	}
-
 	return t
 }
 
@@ -375,6 +363,5 @@ func first(opt []EncodeOptions) EncodeOptions {
 	if len(opt) > 0 {
 		return opt[0]
 	}
-
 	return EncodeOptions{}
 }

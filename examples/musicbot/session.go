@@ -50,7 +50,6 @@ func (m *manager) get(chatID int64) *session {
 		s = &session{mgr: m, chatID: chatID, volume: 100}
 		m.sessions[chatID] = s
 	}
-
 	return s
 }
 
@@ -67,7 +66,6 @@ func (s *session) enqueue(t track) (int, bool) {
 	if !s.playing {
 		return 0, true
 	}
-
 	return len(s.queue), false
 }
 
@@ -82,7 +80,6 @@ func (s *session) ensureCall(factory clientFactory, chatID any) error {
 		return err
 	}
 	s.call = call
-
 	return nil
 }
 
@@ -106,7 +103,6 @@ func (s *session) startNext() {
 			_ = call.Leave()
 		}
 		s.mgr.drop(s.chatID)
-
 		return
 	}
 	next := s.queue[0]
@@ -147,12 +143,10 @@ func (s *session) skip() bool {
 	s.mu.Lock()
 	if s.player == nil && len(s.queue) == 0 {
 		s.mu.Unlock()
-
 		return false
 	}
 	s.mu.Unlock()
 	s.startNext()
-
 	return true
 }
 
@@ -163,7 +157,6 @@ func (s *session) pause() bool {
 		return false
 	}
 	s.player.Pause()
-
 	return true
 }
 
@@ -174,7 +167,6 @@ func (s *session) resume() bool {
 		return false
 	}
 	s.player.Resume()
-
 	return true
 }
 
@@ -203,7 +195,6 @@ func (s *session) leave() error {
 	if call != nil {
 		return call.Leave()
 	}
-
 	return nil
 }
 
@@ -215,7 +206,6 @@ func (s *session) setVolume(percent int) error {
 	if call == nil {
 		return fmt.Errorf("not in a call")
 	}
-
 	return call.SetVolume(percent)
 }
 
@@ -225,14 +215,12 @@ func (s *session) nowPlaying() (string, bool) {
 	if s.current == nil {
 		return "", false
 	}
-
 	return s.current.title, true
 }
 
 func (s *session) list() []track {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	return append([]track(nil), s.queue...)
 }
 
@@ -240,7 +228,6 @@ func sourceFor(t track) gortc.Source {
 	if t.video {
 		return gortc.FromFile(t.path)
 	}
-
 	return gortc.FromFile(t.path, gortc.EncodeOptions{Tracks: gortc.TrackAudio})
 }
 
@@ -280,6 +267,5 @@ func mustEnv(key string) string {
 	if v == "" {
 		panic("missing required env var: " + key)
 	}
-
 	return v
 }

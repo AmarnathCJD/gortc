@@ -7,6 +7,7 @@ package media
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -24,7 +25,6 @@ type playControl struct {
 func newPlayControl(base time.Duration) *playControl {
 	c := &playControl{base: base}
 	c.cond = sync.NewCond(&c.mu)
-
 	return c
 }
 
@@ -37,7 +37,6 @@ func (c *playControl) tick(d time.Duration) {
 func (c *playControl) position() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	return c.base + c.elapsed
 }
 
@@ -48,7 +47,6 @@ func (c *playControl) gate() bool {
 	}
 	stopped := c.stopped
 	c.mu.Unlock()
-
 	return !stopped
 }
 
@@ -75,7 +73,6 @@ func (c *playControl) stop() {
 func (c *playControl) isStopped() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	return c.stopped
 }
 
@@ -104,7 +101,6 @@ func (p *Player) Stop() {
 func (p *Player) Paused() bool {
 	p.ctrl.mu.Lock()
 	defer p.ctrl.mu.Unlock()
-
 	return p.ctrl.paused
 }
 
@@ -147,7 +143,6 @@ func (p *Player) Seek(offset time.Duration) error {
 		cancel()
 		done <- err
 		close(done)
-
 		return err
 	}
 
@@ -155,7 +150,6 @@ func (p *Player) Seek(offset time.Duration) error {
 		done <- runStreams(streams, p.send, p.aSSRC, p.vSSRC, ctrl)
 		close(done)
 	}()
-
 	return nil
 }
 
@@ -177,6 +171,42 @@ func Play(ctx context.Context, send AVSender, audioSSRC, videoSSRC uint32, src S
 		p.done <- streamControlled(ctx, send, audioSSRC, videoSSRC, src, ctrl)
 		close(p.done)
 	}()
-
 	return p
+}
+
+type rtpCursor struct {
+	seq uint16
+	ts  uint32
+}
+
+var (
+	contMu  sync.Mutex
+	cursors = map[uint32]*rtpCursor{}
+)
+
+func nextCursor(ssrc uint32) *rtpCursor {
+	contMu.Lock()
+	defer contMu.Unlock()
+	c, ok := cursors[ssrc]
+	if !ok {
+		c = &rtpCursor{seq: uint16(rand.Uint32()), ts: rand.Uint32()}
+		cursors[ssrc] = c
+	}
+
+	return c
+}
+
+func loadCursor(ssrc uint32) (c *rtpCursor, seq uint16, ts uint32) {
+	c = nextCursor(ssrc)
+	contMu.Lock()
+	seq, ts = c.seq, c.ts
+	contMu.Unlock()
+
+	return
+}
+
+func saveCursor(c *rtpCursor, seq uint16, ts uint32) {
+	contMu.Lock()
+	c.seq, c.ts = seq, ts
+	contMu.Unlock()
 }

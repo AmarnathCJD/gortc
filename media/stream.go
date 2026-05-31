@@ -54,7 +54,6 @@ func Stream(ctx context.Context, send AVSender, audioSSRC, videoSSRC uint32, src
 	if videoErr != nil {
 		return fmt.Errorf("video stream: %w", videoErr)
 	}
-
 	return nil
 }
 
@@ -68,7 +67,6 @@ func streamControlled(ctx context.Context, send AVSender, audioSSRC, videoSSRC u
 		<-ctx.Done()
 		ctrl.stop()
 	}()
-
 	return runStreams(streams, send, audioSSRC, videoSSRC, ctrl)
 }
 
@@ -106,6 +104,5 @@ func runStreams(streams *Streams, send AVSender, audioSSRC, videoSSRC uint32, ct
 	if videoErr != nil {
 		return fmt.Errorf("video stream: %w", videoErr)
 	}
-
 	return nil
 }

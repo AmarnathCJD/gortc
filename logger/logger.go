@@ -49,7 +49,6 @@ func New(opts ...Option) *Logger {
 	if h == nil {
 		h = slog.NewTextHandler(c.out, &slog.HandlerOptions{Level: c.level})
 	}
-
 	return &Logger{sl: slog.New(h)}
 }
 
@@ -58,14 +57,12 @@ func From(sl *slog.Logger) *Logger {
 	if sl == nil {
 		return Disabled()
 	}
-
 	return &Logger{sl: sl}
 }
 
 // Disabled returns a logger that discards everything.
 func Disabled() *Logger {
 	h := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1})
-
 	return &Logger{sl: slog.New(h)}
 }
 

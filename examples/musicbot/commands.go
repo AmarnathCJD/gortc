@@ -57,7 +57,6 @@ func (b *bot) handlePlay(video bool) telegram.MessageHandler {
 			s.startNext()
 			return edit(status, "playing: "+name)
 		}
-
 		return edit(status, fmt.Sprintf("queued #%d: %s", pos, name))
 	}
 }
@@ -67,7 +66,6 @@ func (b *bot) handleSkip(m *telegram.NewMessage) error {
 	if !s.skip() {
 		return reply2(m, "nothing is playing")
 	}
-
 	return reply2(m, "skipped")
 }
 
@@ -76,7 +74,6 @@ func (b *bot) handlePause(m *telegram.NewMessage) error {
 	if !s.pause() {
 		return reply2(m, "nothing to pause")
 	}
-
 	return reply2(m, "paused")
 }
 
@@ -85,7 +82,6 @@ func (b *bot) handleResume(m *telegram.NewMessage) error {
 	if !s.resume() {
 		return reply2(m, "nothing to resume")
 	}
-
 	return reply2(m, "resumed")
 }
 
@@ -96,7 +92,6 @@ func (b *bot) handleEnd(m *telegram.NewMessage) error {
 		return reply2(m, "stopped (leave error: "+err.Error()+")")
 	}
 	b.mgr.drop(m.ChatID())
-
 	return reply2(m, "stopped and left")
 }
 
@@ -106,7 +101,6 @@ func (b *bot) handleLeave(m *telegram.NewMessage) error {
 		return reply2(m, "leave error: "+err.Error())
 	}
 	b.mgr.drop(m.ChatID())
-
 	return reply2(m, "left the voice chat")
 }
 
@@ -123,7 +117,6 @@ func (b *bot) handleVolume(m *telegram.NewMessage) error {
 	if err := s.setVolume(v); err != nil {
 		return reply2(m, "volume error: "+err.Error())
 	}
-
 	return reply2(m, fmt.Sprintf("volume set to %d%%", v))
 }
 
@@ -145,7 +138,6 @@ func (b *bot) handleQueue(m *telegram.NewMessage) error {
 			fmt.Fprintf(&sb, "%d. %s\n", i+1, t.title)
 		}
 	}
-
 	return reply2(m, sb.String())
 }
 
@@ -183,7 +175,6 @@ func mediaTitle(m *telegram.NewMessage) string {
 					if t.Performer != "" {
 						return t.Performer + " - " + t.Title
 					}
-
 					return t.Title
 				}
 			}
@@ -192,7 +183,6 @@ func mediaTitle(m *telegram.NewMessage) string {
 			}
 		}
 	}
-
 	return "audio"
 }
 

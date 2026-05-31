@@ -11,7 +11,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -341,7 +340,6 @@ func (gc *GroupConnection) Open() error {
 			gc.log.Debugf("local candidate: %s %s:%d", c.Protocol, c.Address, c.Port)
 		}
 	})
-
 	return nil
 }
 
@@ -421,7 +419,7 @@ func (gc *GroupConnection) Connect(responseJSON string) error {
 		return fmt.Errorf("parse server response: %w", err)
 	}
 
-	answer := buildAnswerSDP(gc.pc.LocalDescription().SDP, resp)
+	answer := buildAnswerSDP(resp)
 	gc.log.Debugf("setting answer SDP:\n%s", answer)
 
 	if err := gc.pc.SetRemoteDescription(webrtc.SessionDescription{
@@ -430,7 +428,6 @@ func (gc *GroupConnection) Connect(responseJSON string) error {
 	}); err != nil {
 		return fmt.Errorf("set remote description: %w", err)
 	}
-
 	return nil
 }
 
@@ -519,7 +516,6 @@ func (gc *GroupConnection) State() string {
 	if gc.state == "" {
 		return "new"
 	}
-
 	return gc.state
 }
 
@@ -543,33 +539,6 @@ func (gc *GroupConnection) OutgoingAudioSsrc() uint32 {
 
 func (gc *GroupConnection) OutgoingVideoSsrc() uint32 {
 	return gc.outgoingVideoSsrc
-}
-
-func randomICECredential(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	max := big.NewInt(int64(len(charset)))
-	for i := range b {
-		n, _ := rand.Int(rand.Reader, max)
-		b[i] = charset[n.Int64()]
-	}
-	return string(b)
-}
-
-func extractSSRC(sdp string) uint32 {
-	for _, line := range strings.Split(sdp, "\r\n") {
-		if strings.HasPrefix(line, "a=ssrc:") {
-			rest := strings.TrimPrefix(line, "a=ssrc:")
-			parts := strings.SplitN(rest, " ", 2)
-			if len(parts) >= 1 {
-				n, err := strconv.ParseUint(parts[0], 10, 32)
-				if err == nil {
-					return uint32(n)
-				}
-			}
-		}
-	}
-	return 0
 }
 
 func extractAudioVideoSSRCs(sdp string) (audio, video uint32) {
@@ -632,7 +601,7 @@ func extractSDPParams(sdp string) (ufrag, pwd, fingerprint, hash string) {
 	return
 }
 
-func buildAnswerSDP(localSDP string, resp ServerResponse) string {
+func buildAnswerSDP(resp ServerResponse) string {
 	t := resp.Transport
 	var lines []string
 
@@ -806,7 +775,6 @@ func buildAnswerSDP(localSDP string, resp ServerResponse) string {
 	}
 
 	lines = append(lines, "")
-
 	return strings.Join(lines, "\r\n")
 }
 

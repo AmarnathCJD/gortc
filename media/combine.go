@@ -24,7 +24,6 @@ func Concat(srcs ...Source) Source {
 	for _, s := range srcs {
 		tracks |= s.Tracks()
 	}
-
 	return &seqSource{tracks: tracks, next: listProvider(srcs)}
 }
 
@@ -34,14 +33,12 @@ func loopProvider(src Source) func() Source {
 
 func listProvider(srcs []Source) func() Source {
 	i := 0
-
 	return func() Source {
 		if i >= len(srcs) {
 			return nil
 		}
 		s := srcs[i]
 		i++
-
 		return s
 	}
 }
@@ -76,7 +73,6 @@ func (s *seqSource) Open(ctx context.Context) (*Streams, error) {
 	} else if s.tracks.Has(TrackVideo) {
 		out.Video = &trackReader{chain: cr, pick: pickVideo}
 	}
-
 	return out, nil
 }
 
@@ -96,17 +92,14 @@ func (c *chainReader) advance() bool {
 	src := c.next()
 	if src == nil {
 		c.cur = nil
-
 		return false
 	}
 	st, err := src.Open(c.ctx)
 	if err != nil {
 		c.cur = nil
-
 		return false
 	}
 	c.cur = st
-
 	return true
 }
 
@@ -114,7 +107,6 @@ func (c *chainReader) close() error {
 	if c.cur != nil {
 		return c.cur.Close()
 	}
-
 	return nil
 }
 

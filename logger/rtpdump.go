@@ -22,7 +22,6 @@ func (f *RTPDump) NewInterceptor(string) (interceptor.Interceptor, error) {
 	if log == nil {
 		log = Disabled()
 	}
-
 	return &rtpDump{log: log}, nil
 }
 
@@ -34,12 +33,10 @@ type rtpDump struct {
 
 func (d *rtpDump) BindLocalStream(info *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
 	d.log.Debugf("bind ssrc=%d pt=%d mime=%s clock=%d", info.SSRC, info.PayloadType, info.MimeType, info.ClockRate)
-
 	return interceptor.RTPWriterFunc(func(h *rtp.Header, payload []byte, a interceptor.Attributes) (int, error) {
 		if n := d.n.Add(1); n <= 20 || n%100 == 0 {
 			d.log.Debugf("tx #%d ssrc=%d pt=%d seq=%d ts=%d marker=%t len=%d", n, h.SSRC, h.PayloadType, h.SequenceNumber, h.Timestamp, h.Marker, len(payload))
 		}
-
 		return w.Write(h, payload, a)
 	})
 }
