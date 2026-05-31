@@ -199,7 +199,7 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 
 func (gc *GroupCall) leaveCallSilent() error {
 	if gc.call != nil {
-		_, _ = gc.client.PhoneLeaveGroupCall(*gc.call, 0)
+		_, _ = gc.client.PhoneLeaveGroupCall(*gc.call, int32(gc.conn.OutgoingAudioSsrc()))
 	}
 	return gc.conn.Close()
 }
@@ -244,7 +244,7 @@ func (gc *GroupCall) Connection() *transport.GroupConnection {
 
 func (gc *GroupCall) Leave() error {
 	if gc.call != nil {
-		_, err := gc.client.PhoneLeaveGroupCall(*gc.call, 0)
+		_, err := gc.client.PhoneLeaveGroupCall(*gc.call, int32(gc.conn.OutgoingAudioSsrc()))
 		if err != nil {
 			gc.log.Warnf("leave group call error: %v", err)
 		}

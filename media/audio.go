@@ -53,7 +53,7 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 	const samplesPerFrame = opusClockRate * opusFrameMs / 1000 // 960
 
 	var played time.Duration
-	var pending []byte // packet continued from a previous page
+	var pending []byte 
 
 	for {
 		if ctrl != nil {

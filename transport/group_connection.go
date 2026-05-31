@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,6 +127,9 @@ type GroupConnection struct {
 	onStateChange  func(string)
 	state          string
 
+	srflxReady chan struct{}
+	srflxOnce  sync.Once
+
 	log *logger.Logger
 }
 
@@ -177,6 +181,8 @@ func (gc *GroupConnection) Open() error {
 	defer gc.mu.Unlock()
 
 	gc.generateSsrcs()
+	gc.srflxReady = make(chan struct{})
+	gc.srflxOnce = sync.Once{}
 
 	m := &webrtc.MediaEngine{}
 	// Opus fmtp must advertise stereo=1;sprop-stereo=1 (RFC 7587 §7.1); without
@@ -248,8 +254,7 @@ func (gc *GroupConnection) Open() error {
 	if err := webrtc.RegisterDefaultInterceptors(m, i); err != nil {
 		return fmt.Errorf("register interceptors: %w", err)
 	}
-	// Order matters: the last-added interceptor is outermost (runs first on
-	// the way out), so AudioLevel stamps the extension before RTPDump logs it.
+	
 	i.Add(&logger.RTPDump{Log: gc.log.With("subsystem", "rtp-dump")})
 	i.Add(&MarkerClearInterceptorFactory{})
 	i.Add(&AudioLevelInterceptorFactory{})
@@ -260,6 +265,9 @@ func (gc *GroupConnection) Open() error {
 		60*time.Second,
 		2*time.Second,
 	)
+
+	se.SetSTUNGatherTimeout(8 * time.Second)
+	se.SetSrflxAcceptanceMinWait(0)
 	se.SetNetworkTypes([]webrtc.NetworkType{
 		webrtc.NetworkTypeUDP4,
 	})
@@ -277,6 +285,13 @@ func (gc *GroupConnection) Open() error {
 		return true
 	})
 
+	if runtime.GOOS == "windows" {
+		icsNet := &net.IPNet{IP: net.IPv4(192, 168, 137, 0), Mask: net.CIDRMask(24, 32)}
+		se.SetIPFilter(func(ip net.IP) bool {
+			return !icsNet.Contains(ip)
+		})
+	}
+
 	api := webrtc.NewAPI(
 		webrtc.WithMediaEngine(m),
 		webrtc.WithInterceptorRegistry(i),
@@ -290,6 +305,8 @@ func (gc *GroupConnection) Open() error {
 			{URLs: []string{"stun:stun2.l.google.com:19302"}},
 			{URLs: []string{"stun:stun3.l.google.com:19302"}},
 			{URLs: []string{"stun:stun4.l.google.com:19302"}},
+			{URLs: []string{"stun:stun.cloudflare.com:3478"}},
+			{URLs: []string{"stun:global.stun.twilio.com:3478"}},
 		},
 	})
 	if err != nil {
@@ -298,7 +315,7 @@ func (gc *GroupConnection) Open() error {
 	gc.pc = pc
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		gc.log.Infof("connection state: %s", state)
+		gc.log.Debugf("[ice-debug] connection state: %s", state)
 		gc.state = state.String()
 		if gc.onStateChange != nil {
 			gc.onStateChange(state.String())
@@ -317,17 +334,34 @@ func (gc *GroupConnection) Open() error {
 		}
 	})
 
+	pc.OnSignalingStateChange(func(state webrtc.SignalingState) {
+		gc.log.Debugf("[ice-debug] signaling state: %s", state)
+	})
+
+	pc.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
+		gc.log.Debugf("[ice-debug] ICE gathering state: %s", state)
+	})
+
 	var iceStuckTimer *time.Timer
 	var iceTimerMu sync.Mutex
+	var statsPollStop chan struct{}
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		gc.log.Infof("ICE state: %s", state)
+		gc.log.Debugf("[ice-debug] ICE connection state: %s", state)
 		iceTimerMu.Lock()
 		defer iceTimerMu.Unlock()
 		if iceStuckTimer != nil {
 			iceStuckTimer.Stop()
 			iceStuckTimer = nil
 		}
+		if statsPollStop != nil {
+			close(statsPollStop)
+			statsPollStop = nil
+		}
 		if state == webrtc.ICEConnectionStateChecking {
+			stop := make(chan struct{})
+			statsPollStop = stop
+			go gc.pollICEStats(pc, stop)
+
 			iceStuckTimer = time.AfterFunc(5*time.Second, func() {
 				gc.log.Warnf("ICE stuck in checking for 5s, closing PeerConnection so caller can rejoin")
 				_ = pc.Close()
@@ -336,11 +370,47 @@ func (gc *GroupConnection) Open() error {
 	})
 
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
-		if c != nil {
-			gc.log.Debugf("local candidate: %s %s:%d", c.Protocol, c.Address, c.Port)
+		if c == nil {
+			gc.log.Debugf("[ice-debug] local candidate gathering complete")
+			return
+		}
+		gc.log.Debugf("[ice-debug] local candidate: typ=%s proto=%s %s:%d",
+			c.Typ, c.Protocol, c.Address, c.Port)
+		if c.Typ == webrtc.ICECandidateTypeSrflx {
+			gc.srflxOnce.Do(func() {
+				if gc.srflxReady != nil {
+					close(gc.srflxReady)
+				}
+			})
 		}
 	})
 	return nil
+}
+
+func (gc *GroupConnection) pollICEStats(pc *webrtc.PeerConnection, stop <-chan struct{}) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+		pairs := 0
+		for _, s := range pc.GetStats() {
+			cp, ok := s.(webrtc.ICECandidatePairStats)
+			if !ok {
+				continue
+			}
+			pairs++
+			gc.log.Debugf("[ice-debug] pair state=%s nominated=%t sent=%d recv=%d (req sent=%d resp recv=%d)",
+				cp.State, cp.Nominated, cp.PacketsSent, cp.PacketsReceived,
+				cp.RequestsSent, cp.ResponsesReceived)
+		}
+		if pairs == 0 {
+			gc.log.Debugf("[ice-debug] no candidate pairs formed yet (remote candidates may be missing/unreachable)")
+		}
+	}
 }
 
 func (gc *GroupConnection) GetJoinPayload() (string, error) {
@@ -356,15 +426,27 @@ func (gc *GroupConnection) GetJoinPayload() (string, error) {
 		return "", fmt.Errorf("create offer: %w", err)
 	}
 
+	srflxReady := gc.srflxReady
 	gatherComplete := webrtc.GatheringCompletePromise(gc.pc)
 	if err := gc.pc.SetLocalDescription(offer); err != nil {
 		return "", fmt.Errorf("set local description: %w", err)
 	}
 
+	const offerWaitTimeout = 10 * time.Second
+	select {
+	case <-srflxReady:
+		gc.log.Debugf("[ice-debug] srflx candidate ready, sending offer")
+	case <-time.After(offerWaitTimeout):
+		select {
+		case <-srflxReady:
+			gc.log.Debugf("[ice-debug] srflx candidate ready, sending offer")
+		default:
+			gc.log.Warnf("no server-reflexive (STUN) candidate gathered in %s; sending a host-only offer that likely cannot reach Telegram (check network/STUN reachability)", offerWaitTimeout)
+		}
+	}
 	select {
 	case <-gatherComplete:
-	case <-time.After(5 * time.Second):
-		gc.log.Warnf("ICE gathering timed out, proceeding with available candidates")
+	default:
 	}
 
 	localDesc := gc.pc.LocalDescription()
@@ -417,6 +499,23 @@ func (gc *GroupConnection) Connect(responseJSON string) error {
 	var resp ServerResponse
 	if err := json.Unmarshal([]byte(responseJSON), &resp); err != nil {
 		return fmt.Errorf("parse server response: %w", err)
+	}
+
+	cands := resp.Transport.Candidates
+	usable := 0
+	for _, c := range cands {
+		ip := net.ParseIP(c.IP)
+		ok := ip != nil && ip.To4() != nil
+		if ok {
+			usable++
+		}
+		gc.log.Debugf("[ice-debug] remote candidate: typ=%s proto=%s %s:%s prio=%s usable_ipv4=%t",
+			c.Type, c.Protocol, c.IP, c.Port, c.Priority, ok)
+	}
+	gc.log.Debugf("[ice-debug] remote candidates: %d total, %d usable IPv4; ufrag=%q pwd_len=%d fingerprints=%d",
+		len(cands), usable, resp.Transport.Ufrag, len(resp.Transport.Pwd), len(resp.Transport.Fingerprints))
+	if usable == 0 {
+		gc.log.Warnf("Telegram returned no usable IPv4 candidate (%d total); cannot connect", len(cands))
 	}
 
 	answer := buildAnswerSDP(resp)
