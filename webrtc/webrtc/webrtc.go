@@ -10715,6 +10715,20 @@ func newICECandidateFromICE(candidate ice.Candidate, sdpMid string, sdpMLineInde
 	return newCandidate, nil
 }
 
+func NewICECandidateFromSDP(sdpString string) (*ICECandidate, error) {
+	value := strings.TrimPrefix(sdpString, "a=")
+	value = strings.TrimPrefix(value, "candidate:")
+	cand, err := ice.UnmarshalCandidate(value)
+	if err != nil {
+		return nil, err
+	}
+	c, err := newICECandidateFromICE(cand, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 func (c ICECandidate) ToICE() (cand ice.Candidate, err error) {
 	candidateID := c.statsID
 	switch c.Typ {

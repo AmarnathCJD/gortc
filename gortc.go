@@ -29,6 +29,7 @@ import (
 	"github.com/amarnathcjd/gortc/groupcall"
 	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/media"
+	"github.com/amarnathcjd/gortc/phonecall"
 
 	"github.com/amarnathcjd/gogram/telegram"
 )
@@ -96,6 +97,10 @@ func (c *Call) OnDisconnected(fn func()) { c.gc.OnDisconnected = fn }
 // connected, disconnected, failed, closed).
 func (c *Call) OnStateChange(fn func(state string)) { c.gc.OnStateChange = fn }
 
+// OnStreamEnded fires when a Stream or Play finishes, with the terminal error
+// (nil on a clean end).
+func (c *Call) OnStreamEnded(fn func(error)) { c.gc.OnStreamEnded = fn }
+
 // State returns the current connection state.
 func (c *Call) State() string { return c.gc.State() }
 
@@ -146,3 +151,24 @@ func (c *Call) Leave() error { return c.gc.Leave() }
 
 // GroupCall exposes the underlying low-level handle for advanced use.
 func (c *Call) GroupCall() *groupcall.GroupCall { return c.gc }
+
+type (
+	PhoneCall    = phonecall.PhoneCall
+	IncomingCall = phonecall.IncomingCall
+	PhoneOption  = phonecall.Option
+	TrackKind    = phonecall.TrackKind
+)
+
+const (
+	PhoneTrackAudio = phonecall.TrackAudio
+	PhoneTrackVideo = phonecall.TrackVideo
+)
+
+var (
+	WithPhoneLogger   = phonecall.WithLogger
+	WithPhoneLogLevel = phonecall.WithLogLevel
+)
+
+func NewPhoneCall(client *telegram.Client, opts ...PhoneOption) *PhoneCall {
+	return phonecall.New(client, opts...)
+}

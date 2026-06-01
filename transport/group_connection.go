@@ -12,14 +12,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/amarnathcjd/gortc/logger"
-	"github.com/amarnathcjd/gortc/webrtc/interceptor"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 )
 
@@ -184,113 +182,17 @@ func (gc *GroupConnection) Open() error {
 	gc.srflxReady = make(chan struct{})
 	gc.srflxOnce = sync.Once{}
 
-	m := &webrtc.MediaEngine{}
-	// Opus fmtp must advertise stereo=1;sprop-stereo=1 (RFC 7587 §7.1); without
-	// it receivers downmix to mono, producing "underwater"/metallic audio.
-	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType:     webrtc.MimeTypeOpus,
-			ClockRate:    48000,
-			Channels:     2,
-			SDPFmtpLine:  "minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=510000",
-			RTCPFeedback: []webrtc.RTCPFeedback{{Type: "transport-cc"}},
-		},
-		PayloadType: 111,
-	}, webrtc.RTPCodecTypeAudio); err != nil {
-		return fmt.Errorf("register opus codec: %w", err)
+	m, err := BuildMediaEngine()
+	if err != nil {
+		return err
 	}
 
-	// RTP header extensions the SFU expects. Without ssrc-audio-level the SFU
-	// treats every frame as silence and never forwards downlink audio (pcap
-	// diff: baseline emits 0x90/X=1 with a BEDE block, we'd emit 0x80/X=0).
-	audioExtensions := []string{
-		"urn:ietf:params:rtp-hdrext:ssrc-audio-level",
-		"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
-		"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
-		"urn:ietf:params:rtp-hdrext:sdes:mid",
-	}
-	for _, uri := range audioExtensions {
-		if err := m.RegisterHeaderExtension(
-			webrtc.RTPHeaderExtensionCapability{URI: uri},
-			webrtc.RTPCodecTypeAudio,
-		); err != nil {
-			return fmt.Errorf("register audio header extension %s: %w", uri, err)
-		}
+	i, err := BuildInterceptorRegistry(m, gc.log)
+	if err != nil {
+		return err
 	}
 
-	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType:    webrtc.MimeTypeVP8,
-			ClockRate:   90000,
-			SDPFmtpLine: "",
-			RTCPFeedback: []webrtc.RTCPFeedback{
-				{Type: "goog-remb"},
-				{Type: "transport-cc"},
-				{Type: "ccm", Parameter: "fir"},
-				{Type: "nack"},
-				{Type: "nack", Parameter: "pli"},
-			},
-		},
-		PayloadType: 100,
-	}, webrtc.RTPCodecTypeVideo); err != nil {
-		return fmt.Errorf("register vp8 codec: %w", err)
-	}
-
-	videoExtensions := []string{
-		"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
-		"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
-		"urn:3gpp:video-orientation",
-	}
-	for _, uri := range videoExtensions {
-		if err := m.RegisterHeaderExtension(
-			webrtc.RTPHeaderExtensionCapability{URI: uri},
-			webrtc.RTPCodecTypeVideo,
-		); err != nil {
-			return fmt.Errorf("register video header extension %s: %w", uri, err)
-		}
-	}
-
-	i := &interceptor.Registry{}
-	if err := webrtc.RegisterDefaultInterceptors(m, i); err != nil {
-		return fmt.Errorf("register interceptors: %w", err)
-	}
-
-	i.Add(&logger.RTPDump{Log: gc.log.With("subsystem", "rtp-dump")})
-	i.Add(&MarkerClearInterceptorFactory{})
-	i.Add(&AudioLevelInterceptorFactory{})
-
-	se := webrtc.SettingEngine{}
-	se.SetICETimeouts(
-		30*time.Second,
-		60*time.Second,
-		2*time.Second,
-	)
-
-	se.SetSTUNGatherTimeout(8 * time.Second)
-	se.SetSrflxAcceptanceMinWait(0)
-	se.SetNetworkTypes([]webrtc.NetworkType{
-		webrtc.NetworkTypeUDP4,
-	})
-	se.SetInterfaceFilter(func(name string) bool {
-		lower := strings.ToLower(name)
-		for _, skip := range []string{
-			"vethernet", "vmware", "virtualbox", "vbox", "hyper-v",
-			"loopback", "teredo", "isatap", "tap-",
-			"docker", "wsl", "tailscale", "zerotier", "openvpn",
-		} {
-			if strings.Contains(lower, skip) {
-				return false
-			}
-		}
-		return true
-	})
-
-	if runtime.GOOS == "windows" {
-		icsNet := &net.IPNet{IP: net.IPv4(192, 168, 137, 0), Mask: net.CIDRMask(24, 32)}
-		se.SetIPFilter(func(ip net.IP) bool {
-			return !icsNet.Contains(ip)
-		})
-	}
+	se := BuildSettingEngine()
 
 	api := webrtc.NewAPI(
 		webrtc.WithMediaEngine(m),
