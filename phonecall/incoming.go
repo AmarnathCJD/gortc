@@ -11,7 +11,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/amarnathcjd/gortc/webrtc/webrtc"
+	"github.com/amarnathcjd/gortc/media"
 
 	"github.com/amarnathcjd/gogram/telegram"
 )
@@ -92,17 +92,10 @@ func (ic *IncomingCall) Accept(ctx context.Context) error {
 	return pc.startCall(ctx, key, false, obj.Connections)
 }
 
-func (pc *PhoneCall) OnTrack(fn func(TrackKind)) { pc.onTrack = fn }
+func (pc *PhoneCall) OnTrack(fn func(*media.IncomingTrack)) { pc.onTrack = fn }
 
 func randomID() int32 {
 	var buf [4]byte
 	rand.Read(buf[:])
 	return int32(binary.LittleEndian.Uint32(buf[:]) & 0x7fffffff)
-}
-
-func trackKindOf(t *webrtc.TrackRemote) TrackKind {
-	if t.Kind() == webrtc.RTPCodecTypeVideo {
-		return TrackVideo
-	}
-	return TrackAudio
 }

@@ -101,6 +101,10 @@ func (c *Call) OnStateChange(fn func(state string)) { c.gc.OnStateChange = fn }
 // (nil on a clean end).
 func (c *Call) OnStreamEnded(fn func(error)) { c.gc.OnStreamEnded = fn }
 
+// OnTrack fires for each remote audio/video track delivered by the SFU. Use
+// the track's Record / RecordToFile to capture incoming media.
+func (c *Call) OnTrack(fn func(*IncomingTrack)) { c.gc.OnTrack = fn }
+
 // State returns the current connection state.
 func (c *Call) State() string { return c.gc.State() }
 
@@ -153,15 +157,16 @@ func (c *Call) Leave() error { return c.gc.Leave() }
 func (c *Call) GroupCall() *groupcall.GroupCall { return c.gc }
 
 type (
-	PhoneCall    = phonecall.PhoneCall
-	IncomingCall = phonecall.IncomingCall
-	PhoneOption  = phonecall.Option
-	TrackKind    = phonecall.TrackKind
+	PhoneCall     = phonecall.PhoneCall
+	IncomingCall  = phonecall.IncomingCall
+	PhoneOption   = phonecall.Option
+	IncomingTrack = media.IncomingTrack
+	TrackKind     = media.TrackKind
 )
 
 const (
-	PhoneTrackAudio = phonecall.TrackAudio
-	PhoneTrackVideo = phonecall.TrackVideo
+	TrackKindAudio = media.TrackKindAudio
+	TrackKindVideo = media.TrackKindVideo
 )
 
 var (

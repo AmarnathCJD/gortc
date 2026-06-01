@@ -103,16 +103,9 @@ type PhoneCall struct {
 	onConnected    func()
 	onDisconnected func()
 	onStateChange  func(string)
-	onTrack        func(TrackKind)
+	onTrack        func(*media.IncomingTrack)
 	onStreamEnded  func(error)
 }
-
-type TrackKind int
-
-const (
-	TrackAudio TrackKind = iota
-	TrackVideo
-)
 
 func New(client *telegram.Client, opts ...Option) *PhoneCall {
 	pc := &PhoneCall{
@@ -402,7 +395,7 @@ func (pc *PhoneCall) startCall(ctx context.Context, key []byte, isOutgoing bool,
 	conn.onStateChange = pc.onStateChange
 	conn.onTrack = func(t *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		if pc.onTrack != nil {
-			pc.onTrack(trackKindOf(t))
+			pc.onTrack(media.NewIncomingTrack(t))
 		}
 	}
 

@@ -14,16 +14,16 @@ import (
 )
 
 type ivfWriter struct {
-	w     io.WriteCloser
+	w      io.WriteCloser
 	fourcc [4]byte
 
 	frameAssembler vp8Assembler
 
-	frameCount uint64
+	frameCount  uint64
 	wroteHeader bool
 
-	lastTimestamp uint32
-	firstTimestamp uint32
+	lastTimestamp      uint32
+	firstTimestamp     uint32
 	haveFirstTimestamp bool
 
 	closed bool

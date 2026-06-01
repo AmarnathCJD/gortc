@@ -60,11 +60,19 @@ func main() {
 	pc.OnDisconnected(func() {
 		log.Println("call disconnected")
 	})
-	pc.OnTrack(func(kind gortc.TrackKind) {
-		if kind == gortc.PhoneTrackVideo {
-			log.Println("receiving remote video")
-		} else {
-			log.Println("receiving remote audio")
+	pc.OnTrack(func(t *gortc.IncomingTrack) {
+		log.Printf("receiving remote %s track ssrc=%d codec=%s", t.Kind(), t.SSRC(), t.Codec())
+		if recordDir := os.Getenv("RECORD_DIR"); recordDir != "" {
+			ext := ".ogg"
+			if t.Kind() == gortc.TrackKindVideo {
+				ext = ".ivf"
+			}
+			path := recordDir + "/" + t.Kind().String() + "-" + strconv.FormatUint(uint64(t.SSRC()), 10) + ext
+			if err := t.RecordToFile(path); err != nil {
+				log.Printf("record %s: %v", path, err)
+			} else {
+				log.Printf("recording %s to %s", t.Kind(), path)
+			}
 		}
 	})
 	pc.OnStreamEnded(func(err error) {

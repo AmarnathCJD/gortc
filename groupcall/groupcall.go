@@ -33,6 +33,7 @@ type GroupCall struct {
 	OnDisconnected func()
 	OnStateChange  func(string)
 	OnStreamEnded  func(error)
+	OnTrack        func(*media.IncomingTrack)
 }
 
 func (gc *GroupCall) State() string { return gc.conn.State() }
@@ -140,6 +141,13 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 	if err := gc.conn.Open(); err != nil {
 		return fmt.Errorf("open connection: %w", err)
 	}
+
+	gc.conn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if gc.OnTrack == nil {
+			return
+		}
+		gc.OnTrack(media.NewIncomingTrack(track))
+	})
 
 	track, err := gc.conn.AddAudioTrack()
 	if err != nil {
