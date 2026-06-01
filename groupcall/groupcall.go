@@ -32,6 +32,7 @@ type GroupCall struct {
 	OnConnected    func()
 	OnDisconnected func()
 	OnStateChange  func(string)
+	OnStreamEnded  func(error)
 }
 
 func (gc *GroupCall) State() string { return gc.conn.State() }
@@ -226,12 +227,22 @@ func (gc *GroupCall) VideoSSRC() uint32 {
 
 // Stream sends a media source into the call, blocking until it ends or ctx is cancelled.
 func (gc *GroupCall) Stream(ctx context.Context, src media.Source) error {
-	return media.Stream(ctx, gc.Sender(), gc.AudioSSRC(), gc.VideoSSRC(), src)
+	err := media.Stream(ctx, gc.Sender(), gc.AudioSSRC(), gc.VideoSSRC(), src)
+	if gc.OnStreamEnded != nil {
+		gc.OnStreamEnded(err)
+	}
+	return err
 }
 
 // Play starts a media source and returns a controllable Player (pause/resume/stop).
 func (gc *GroupCall) Play(ctx context.Context, src media.Source) *media.Player {
-	return media.Play(ctx, gc.Sender(), gc.AudioSSRC(), gc.VideoSSRC(), src)
+	p := media.Play(ctx, gc.Sender(), gc.AudioSSRC(), gc.VideoSSRC(), src)
+	if gc.OnStreamEnded != nil {
+		go func() {
+			gc.OnStreamEnded(<-p.Done())
+		}()
+	}
+	return p
 }
 
 func (gc *GroupCall) Client() *telegram.Client { return gc.client }
