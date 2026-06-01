@@ -19,11 +19,15 @@ type bot struct {
 	downDir   string
 }
 
-func (b *bot) callFactory() *gortc.Call {
-	return gortc.NewCall(b.assistant, b.logLevel)
+func (b *bot) callFactory(vp9 bool) *gortc.Call {
+	opts := []gortc.Option{b.logLevel}
+	if vp9 {
+		opts = append(opts, gortc.WithVideoCodec(gortc.MimeTypeVP9))
+	}
+	return gortc.NewCall(b.assistant, opts...)
 }
 
-func (b *bot) handlePlay(video bool) telegram.MessageHandler {
+func (b *bot) handlePlay(video, vp9 bool) telegram.MessageHandler {
 	return func(m *telegram.NewMessage) error {
 		if !m.IsReply() {
 			_, err := m.Reply("reply to an audio file with /play")
@@ -47,12 +51,15 @@ func (b *bot) handlePlay(video bool) telegram.MessageHandler {
 		}
 
 		s := b.mgr.get(m.ChatID())
+		s.mu.Lock()
+		s.useVP9 = vp9
+		s.mu.Unlock()
 		if err := s.ensureCall(b.callFactory, m.ChatID()); err != nil {
 			removeFile(path)
 			return edit(status, "failed to join voice chat: "+err.Error())
 		}
 
-		pos, startNow := s.enqueue(track{title: name, path: path, video: video})
+		pos, startNow := s.enqueue(track{title: name, path: path, video: video, vp9: vp9})
 		if startNow {
 			s.startNext()
 			return edit(status, "playing: "+name)
@@ -142,8 +149,9 @@ func (b *bot) handleQueue(m *telegram.NewMessage) error {
 }
 
 func (b *bot) register() {
-	b.client.OnCommand("play", b.handlePlay(false))
-	b.client.OnCommand("vplay", b.handlePlay(true))
+	b.client.OnCommand("play", b.handlePlay(false, false))
+	b.client.OnCommand("vplay", b.handlePlay(true, false))
+	b.client.OnCommand("vp9play", b.handlePlay(true, true))
 	b.client.OnCommand("skip", b.handleSkip)
 	b.client.OnCommand("pause", b.handlePause)
 	b.client.OnCommand("resume", b.handleResume)
@@ -152,6 +160,49 @@ func (b *bot) register() {
 	b.client.OnCommand("leave", b.handleLeave)
 	b.client.OnCommand("volume", b.handleVolume)
 	b.client.OnCommand("queue", b.handleQueue)
+	b.client.OnCommand("stats", b.handleStats)
+	b.client.OnCommand("participants", b.handleParticipants)
+}
+
+func (b *bot) handleStats(m *telegram.NewMessage) error {
+	s := b.mgr.get(m.ChatID())
+	s.mu.Lock()
+	bwe := s.lastBwe
+	call := s.call
+	useVP9 := s.useVP9
+	s.mu.Unlock()
+	codec := "VP8"
+	if useVP9 {
+		codec = "VP9"
+	}
+	state := "not in call"
+	if call != nil {
+		state = call.State()
+	}
+	return reply2(m, fmt.Sprintf(
+		"state: %s\ncodec: %s\nbitrate: %d kbps\nloss: %d/255\njitter: %d",
+		state, codec, bwe.BitrateBps/1000, bwe.FractionLost, bwe.Jitter,
+	))
+}
+
+func (b *bot) handleParticipants(m *telegram.NewMessage) error {
+	s := b.mgr.get(m.ChatID())
+	s.mu.Lock()
+	call := s.call
+	s.mu.Unlock()
+	if call == nil {
+		return reply2(m, "not in a call")
+	}
+	parts := call.Participants()
+	if len(parts) == 0 {
+		return reply2(m, "no participants yet")
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d participant(s):\n", len(parts))
+	for _, p := range parts {
+		fmt.Fprintf(&sb, "- peer=%d muted=%v video=%v vol=%d\n", p.PeerID, p.Muted, p.HasVideo, p.Volume)
+	}
+	return reply2(m, sb.String())
 }
 
 func reply2(m *telegram.NewMessage, text string) error {

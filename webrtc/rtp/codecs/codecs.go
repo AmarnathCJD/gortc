@@ -26,6 +26,87 @@ func (p *OpusPayloader) Payload(_ uint16, payload []byte) [][]byte {
 	return [][]byte{out}
 }
 
+type VP9Payloader struct {
+	pictureID uint16
+	frames    uint32
+}
+
+func (p *VP9Payloader) Payload(mtu uint16, payload []byte) [][]byte {
+	const hdrSize = 3
+	maxFragment := int(mtu) - hdrSize
+	if maxFragment <= 0 || len(payload) == 0 {
+		return nil
+	}
+
+	isKeyframe := vp9IsKeyframe(payload)
+
+	var out [][]byte
+	idx := 0
+	for idx < len(payload) {
+		size := minInt(maxFragment, len(payload)-idx)
+		buf := make([]byte, hdrSize+size)
+
+		buf[0] = 0x80
+		if !isKeyframe {
+			buf[0] |= 0x40
+		}
+		if idx == 0 {
+			buf[0] |= 0x08
+		}
+		if idx+size == len(payload) {
+			buf[0] |= 0x04
+		}
+		buf[1] = 0x80 | byte((p.pictureID>>8)&0x7F)
+		buf[2] = byte(p.pictureID & 0xFF)
+
+		copy(buf[hdrSize:], payload[idx:idx+size])
+		out = append(out, buf)
+		idx += size
+	}
+
+	p.pictureID++
+	if p.pictureID == 0 || p.pictureID > 0x7FFF {
+		p.pictureID = 1
+	}
+	p.frames++
+	return out
+}
+
+func vp9IsKeyframe(frame []byte) bool {
+	if len(frame) < 1 {
+		return false
+	}
+	b := frame[0]
+	frameMarker := (b >> 6) & 0x3
+	if frameMarker != 0x2 {
+		return false
+	}
+	profileLow := (b >> 4) & 0x3
+	profile := profileLow
+	off := 0
+	if profile == 3 {
+		off = 1
+	}
+	_ = off
+	showExisting := (b >> 3) & 0x1
+	if profile <= 2 {
+		showExisting = (b >> 3) & 0x1
+		if showExisting == 1 {
+			return false
+		}
+		frameType := (b >> 2) & 0x1
+		return frameType == 0
+	}
+	if showExisting == 1 {
+		return false
+	}
+	if len(frame) < 2 {
+		return false
+	}
+	frameType := (frame[1] >> 7) & 0x1
+	return frameType == 0
+}
+
 type VP8Payloader struct {
 	EnablePictureID bool
 	pictureID       uint16

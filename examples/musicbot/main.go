@@ -66,7 +66,7 @@ func main() {
 		log.Printf("assistant: @%s (id %d) will join voice chats", me.Username, me.ID)
 	}
 	if me, err := botClient.GetMe(); err == nil {
-		log.Printf("music bot @%s up. commands: /play /vplay /skip /pause /resume /end /leave /volume /queue", me.Username)
+		log.Printf("music bot @%s up. commands: /play /vplay /vp9play /skip /pause /resume /end /leave /volume /queue /stats /participants", me.Username)
 	} else {
 		log.Println("music bot up")
 	}

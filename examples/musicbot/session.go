@@ -15,6 +15,7 @@ type track struct {
 	title string
 	path  string
 	video bool
+	vp9   bool
 }
 
 type session struct {
@@ -29,6 +30,9 @@ type session struct {
 	hadVideo bool
 	playing  bool
 	volume   int
+	useVP9   bool
+	lastBwe  gortc.BandwidthEstimate
+	joinedAt map[int64]bool
 }
 
 type manager struct {
@@ -36,7 +40,7 @@ type manager struct {
 	sessions map[int64]*session
 }
 
-type clientFactory func() *gortc.Call
+type clientFactory func(vp9 bool) *gortc.Call
 
 func newManager() *manager {
 	return &manager{sessions: map[int64]*session{}}
@@ -47,7 +51,7 @@ func (m *manager) get(chatID int64) *session {
 	defer m.mu.Unlock()
 	s, ok := m.sessions[chatID]
 	if !ok {
-		s = &session{mgr: m, chatID: chatID, volume: 100}
+		s = &session{mgr: m, chatID: chatID, volume: 100, joinedAt: map[int64]bool{}}
 		m.sessions[chatID] = s
 	}
 	return s
@@ -75,7 +79,26 @@ func (s *session) ensureCall(factory clientFactory, chatID any) error {
 	if s.call != nil {
 		return nil
 	}
-	call := factory()
+	call := factory(s.useVP9)
+
+	call.OnParticipant(func(ev gortc.ParticipantEvent, p gortc.Participant) {
+		s.mu.Lock()
+		switch ev {
+		case gortc.ParticipantJoined:
+			s.joinedAt[p.PeerID] = true
+		case gortc.ParticipantLeft:
+			delete(s.joinedAt, p.PeerID)
+		}
+		s.mu.Unlock()
+		fmt.Printf("[chat %d] participant %s: peer=%d muted=%v video=%v\n",
+			s.chatID, ev, p.PeerID, p.Muted, p.HasVideo)
+	})
+	call.OnBandwidthEstimate(func(e gortc.BandwidthEstimate) {
+		s.mu.Lock()
+		s.lastBwe = e
+		s.mu.Unlock()
+	})
+
 	if err := call.Join(chatID); err != nil {
 		return err
 	}
@@ -226,7 +249,11 @@ func (s *session) list() []track {
 
 func sourceFor(t track) gortc.Source {
 	if t.video {
-		return gortc.FromFile(t.path)
+		opt := gortc.Res720
+		if t.vp9 {
+			opt = opt.With(gortc.EncodeOptions{VideoCodec: gortc.VideoCodecVP9})
+		}
+		return gortc.FromFile(t.path, opt)
 	}
 	return gortc.FromFile(t.path, gortc.EncodeOptions{Tracks: gortc.TrackAudio})
 }

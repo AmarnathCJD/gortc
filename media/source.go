@@ -52,8 +52,33 @@ type Source interface {
 	Open(ctx context.Context) (*Streams, error)
 }
 
-// EncodeOptions tunes the ffmpeg encode for transcoding sources.
+type VideoCodec int
+
+const (
+	VideoCodecVP8 VideoCodec = iota
+	VideoCodecVP9
+)
+
+func (c VideoCodec) String() string {
+	switch c {
+	case VideoCodecVP9:
+		return "VP9"
+	default:
+		return "VP8"
+	}
+}
+
+func (c VideoCodec) MimeType() string {
+	switch c {
+	case VideoCodecVP9:
+		return "video/VP9"
+	default:
+		return "video/VP8"
+	}
+}
+
 type EncodeOptions struct {
+	VideoCodec       VideoCodec
 	VideoBitrateKbps int
 	VideoWidth       int
 	VideoHeight      int
@@ -85,7 +110,6 @@ func (o EncodeOptions) withDefaults() EncodeOptions {
 	return o
 }
 
-
 var (
 	Res480  = EncodeOptions{VideoWidth: 854, VideoHeight: 480, VideoBitrateKbps: 500, VideoFPS: 30}
 	Res720  = EncodeOptions{VideoWidth: 1280, VideoHeight: 720, VideoBitrateKbps: 1500, VideoFPS: 30}
@@ -93,6 +117,9 @@ var (
 )
 
 func (o EncodeOptions) With(override EncodeOptions) EncodeOptions {
+	if override.VideoCodec != 0 {
+		o.VideoCodec = override.VideoCodec
+	}
 	if override.VideoBitrateKbps != 0 {
 		o.VideoBitrateKbps = override.VideoBitrateKbps
 	}
@@ -155,11 +182,15 @@ func ffmpegAudioArgs(input []string, o EncodeOptions) []string {
 func ffmpegVideoArgs(input []string, o EncodeOptions) []string {
 	rate := fmt.Sprintf("%dk", o.VideoBitrateKbps)
 	gop := fmt.Sprintf("%d", o.VideoFPS*2)
+	encoder := "libvpx"
+	if o.VideoCodec == VideoCodecVP9 {
+		encoder = "libvpx-vp9"
+	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-re"}
 	args = append(args, input...)
 	args = append(args,
 		"-an",
-		"-c:v", "libvpx",
+		"-c:v", encoder,
 		"-b:v", rate, "-minrate", rate, "-maxrate", rate, "-bufsize", rate,
 		"-rc_lookahead", "16",
 		"-lag-in-frames", "16",
@@ -251,6 +282,7 @@ func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, e
 		if s.stdin != nil {
 			cmd.Stdin = s.stdin
 		}
+		cmd.Stderr = nil
 		out, err := cmd.StdoutPipe()
 		if err != nil {
 			return nil, err

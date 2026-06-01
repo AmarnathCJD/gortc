@@ -116,9 +116,11 @@ type GroupConnection struct {
 	outgoingVideoSsrc uint32
 	videoSsrcGroups   []SsrcGroup
 
-	audioTrack *webrtc.TrackLocalStaticRTP
-	videoTrack *webrtc.TrackLocalStaticRTP
-	dispatcher *Dispatcher
+	audioTrack  *webrtc.TrackLocalStaticRTP
+	videoTrack  *webrtc.TrackLocalStaticRTP
+	audioSender *webrtc.RTPSender
+	videoSender *webrtc.RTPSender
+	dispatcher  *Dispatcher
 
 	onConnected    func()
 	onDisconnected func()
@@ -450,10 +452,12 @@ func (gc *GroupConnection) AddAudioTrack() (*webrtc.TrackLocalStaticRTP, error) 
 		return nil, fmt.Errorf("create audio track: %w", err)
 	}
 
-	if _, err := gc.pc.AddTrack(track); err != nil {
+	sender, err := gc.pc.AddTrack(track)
+	if err != nil {
 		return nil, fmt.Errorf("add audio track: %w", err)
 	}
 	gc.audioTrack = track
+	gc.audioSender = sender
 	gc.tryStartDispatcher()
 	return track, nil
 }
@@ -478,13 +482,18 @@ func (gc *GroupConnection) AddVideoTrack(codecMime string) (*webrtc.TrackLocalSt
 		return nil, fmt.Errorf("create video track: %w", err)
 	}
 
-	if _, err := gc.pc.AddTrack(track); err != nil {
+	sender, err := gc.pc.AddTrack(track)
+	if err != nil {
 		return nil, fmt.Errorf("add video track: %w", err)
 	}
 	gc.videoTrack = track
+	gc.videoSender = sender
 	gc.tryStartDispatcher()
 	return track, nil
 }
+
+func (gc *GroupConnection) VideoSender() *webrtc.RTPSender { return gc.videoSender }
+func (gc *GroupConnection) AudioSender() *webrtc.RTPSender { return gc.audioSender }
 
 func (gc *GroupConnection) tryStartDispatcher() {
 	if gc.dispatcher != nil {

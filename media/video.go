@@ -18,8 +18,13 @@ import (
 
 const (
 	vp8PayloadType = 100
-	vp8ClockRate   = 90000
+	vp9PayloadType = 102
+	videoClockRate = 90000
 )
+
+type videoPayloader interface {
+	Payload(mtu uint16, payload []byte) [][]byte
+}
 
 type VideoSender interface {
 	SendVideo(*rtp.Packet)
@@ -50,11 +55,17 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 	if frameDur <= 0 {
 		frameDur = time.Second / 30
 	}
-	tsStep := uint32(float64(vp8ClockRate) * frameDur.Seconds())
+	tsStep := uint32(float64(videoClockRate) * frameDur.Seconds())
 
 	cur, seq, ts := loadCursor(ssrc)
 	defer func() { saveCursor(cur, seq, ts) }()
-	payloader := &codecs.VP8Payloader{}
+
+	var payloader videoPayloader = &codecs.VP8Payloader{}
+	payloadType := uint8(vp8PayloadType)
+	if header.FourCC == "VP90" {
+		payloader = &codecs.VP9Payloader{}
+		payloadType = vp9PayloadType
+	}
 	const mtu = 1200
 
 	start := time.Now()
@@ -83,7 +94,7 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 			pkt := &rtp.Packet{
 				Header: rtp.Header{
 					Version:        2,
-					PayloadType:    vp8PayloadType,
+					PayloadType:    payloadType,
 					SequenceNumber: seq,
 					Timestamp:      ts,
 					SSRC:           ssrc,

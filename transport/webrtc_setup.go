@@ -27,11 +27,21 @@ func AudioCodecCapability() webrtc.RTPCodecCapability {
 	}
 }
 
+const MimeTypeVP9 = "video/VP9"
+
 func VideoCodecCapability() webrtc.RTPCodecCapability {
+	return VideoCodecCapabilityFor(webrtc.MimeTypeVP8)
+}
+
+func VideoCodecCapabilityFor(mime string) webrtc.RTPCodecCapability {
+	fmtp := ""
+	if mime == MimeTypeVP9 {
+		fmtp = "profile-id=0"
+	}
 	return webrtc.RTPCodecCapability{
-		MimeType:    webrtc.MimeTypeVP8,
+		MimeType:    mime,
 		ClockRate:   90000,
-		SDPFmtpLine: "",
+		SDPFmtpLine: fmtp,
 		RTCPFeedback: []webrtc.RTCPFeedback{
 			{Type: "goog-remb"},
 			{Type: "transport-cc"},
@@ -72,6 +82,13 @@ func BuildMediaEngine() (*webrtc.MediaEngine, error) {
 		PayloadType:        100,
 	}, webrtc.RTPCodecTypeVideo); err != nil {
 		return nil, fmt.Errorf("register vp8 codec: %w", err)
+	}
+
+	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: VideoCodecCapabilityFor(MimeTypeVP9),
+		PayloadType:        102,
+	}, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, fmt.Errorf("register vp9 codec: %w", err)
 	}
 
 	videoExtensions := []string{

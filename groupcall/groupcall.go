@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/amarnathcjd/gortc/logger"
@@ -29,11 +30,43 @@ type GroupCall struct {
 	videoTrack *webrtc.TrackLocalStaticRTP
 	log        *logger.Logger
 
-	OnConnected    func()
-	OnDisconnected func()
-	OnStateChange  func(string)
-	OnStreamEnded  func(error)
-	OnTrack        func(*media.IncomingTrack)
+	chatID         any
+	leaving        bool
+	everConnected  bool
+	reconnMu       sync.Mutex
+	reconnRun      bool
+	reconnect      reconnectPolicy
+	videoCodecMime string
+
+	participants     *participantStore
+	participantsOnce sync.Once
+
+	bwe *bweTracker
+
+	OnConnected         func()
+	OnDisconnected      func()
+	OnStateChange       func(string)
+	OnStreamEnded       func(error)
+	OnTrack             func(*media.IncomingTrack)
+	OnReconnecting      func(attempt int)
+	OnReconnected       func()
+	OnReconnectFailed   func(error)
+	OnParticipant       func(ParticipantEvent, Participant)
+	OnBandwidthEstimate func(BandwidthEstimate)
+}
+
+func (gc *GroupCall) BandwidthEstimate() BandwidthEstimate {
+	if gc.bwe == nil {
+		return BandwidthEstimate{}
+	}
+	return gc.bwe.snapshot()
+}
+
+type reconnectPolicy struct {
+	enabled     bool
+	maxAttempts int
+	base        time.Duration
+	max         time.Duration
 }
 
 func (gc *GroupCall) State() string { return gc.conn.State() }
@@ -56,21 +89,52 @@ func WithLogLevel(level slog.Level) Option {
 	}
 }
 
+func WithVideoCodec(mime string) Option {
+	return func(gc *GroupCall) {
+		gc.videoCodecMime = mime
+	}
+}
+
+func WithReconnect(attempts int, base, maxBackoff time.Duration) Option {
+	return func(gc *GroupCall) {
+		gc.reconnect = reconnectPolicy{enabled: true, maxAttempts: attempts, base: base, max: maxBackoff}
+	}
+}
+
 func New(client *telegram.Client, opts ...Option) *GroupCall {
 	gc := &GroupCall{
 		client: client,
 		log:    logger.New(),
+		reconnect: reconnectPolicy{
+			enabled:     false,
+			maxAttempts: 0,
+			base:        time.Second,
+			max:         30 * time.Second,
+		},
 	}
 	for _, o := range opts {
 		o(gc)
 	}
+	if gc.reconnect.base <= 0 {
+		gc.reconnect.base = time.Second
+	}
+	if gc.reconnect.max <= 0 {
+		gc.reconnect.max = 30 * time.Second
+	}
 	gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
+	gc.participants = newParticipantStore()
+	gc.bwe = newBWETracker()
 	return gc
 }
 
 var errRetryable = errors.New("retryable")
 
 func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
+	gc.reconnMu.Lock()
+	gc.chatID = chatID
+	gc.leaving = false
+	gc.reconnMu.Unlock()
+	gc.installParticipantHandler()
 	const maxAttempts = 5
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -114,6 +178,9 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 	disconnected := make(chan struct{}, 1)
 	gc.conn.OnConnected(func() {
 		gc.log.Infof("connected to group call")
+		gc.reconnMu.Lock()
+		gc.everConnected = true
+		gc.reconnMu.Unlock()
 		select {
 		case connected <- struct{}{}:
 		default:
@@ -131,6 +198,7 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 		if gc.OnDisconnected != nil {
 			gc.OnDisconnected()
 		}
+		gc.maybeStartReconnect()
 	})
 	gc.conn.OnStateChange(func(state string) {
 		if gc.OnStateChange != nil {
@@ -155,11 +223,19 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 	}
 	gc.audioTrack = track
 
-	videoTrack, err := gc.conn.AddVideoTrack("")
+	videoTrack, err := gc.conn.AddVideoTrack(gc.videoCodecMime)
 	if err != nil {
 		return fmt.Errorf("add video track: %w", err)
 	}
 	gc.videoTrack = videoTrack
+
+	gc.bwe.setCallback(func(e BandwidthEstimate) {
+		if gc.OnBandwidthEstimate != nil {
+			gc.OnBandwidthEstimate(e)
+		}
+	})
+	gc.bwe.attach(gc.conn.VideoSender())
+	gc.bwe.attach(gc.conn.AudioSender())
 
 	joinPayload, err := gc.conn.GetJoinPayload()
 	if err != nil {
@@ -262,6 +338,9 @@ func (gc *GroupCall) Connection() *transport.GroupConnection {
 }
 
 func (gc *GroupCall) Leave() error {
+	gc.reconnMu.Lock()
+	gc.leaving = true
+	gc.reconnMu.Unlock()
 	if gc.call != nil {
 		_, err := gc.client.PhoneLeaveGroupCall(*gc.call, int32(gc.conn.OutgoingAudioSsrc()))
 		if err != nil {
@@ -269,6 +348,80 @@ func (gc *GroupCall) Leave() error {
 		}
 	}
 	return gc.conn.Close()
+}
+
+func (gc *GroupCall) maybeStartReconnect() {
+	gc.reconnMu.Lock()
+	if !gc.reconnect.enabled || gc.leaving || gc.reconnRun || gc.chatID == nil || !gc.everConnected {
+		gc.reconnMu.Unlock()
+		return
+	}
+	gc.reconnRun = true
+	gc.everConnected = false
+	chatID := gc.chatID
+	policy := gc.reconnect
+	gc.reconnMu.Unlock()
+
+	go gc.reconnectLoop(chatID, policy)
+}
+
+func (gc *GroupCall) reconnectLoop(chatID any, p reconnectPolicy) {
+	defer func() {
+		gc.reconnMu.Lock()
+		gc.reconnRun = false
+		gc.reconnMu.Unlock()
+	}()
+
+	backoff := p.base
+	for attempt := 1; ; attempt++ {
+		gc.reconnMu.Lock()
+		if gc.leaving {
+			gc.reconnMu.Unlock()
+			return
+		}
+		gc.reconnMu.Unlock()
+
+		if p.maxAttempts > 0 && attempt > p.maxAttempts {
+			gc.log.Warnf("reconnect: giving up after %d attempts", p.maxAttempts)
+			if gc.OnReconnectFailed != nil {
+				gc.OnReconnectFailed(fmt.Errorf("reconnect: exhausted %d attempts", p.maxAttempts))
+			}
+			return
+		}
+
+		if gc.OnReconnecting != nil {
+			gc.OnReconnecting(attempt)
+		}
+		gc.log.Infof("reconnect attempt %d (backoff=%s)", attempt, backoff)
+
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > p.max {
+			backoff = p.max
+		}
+
+		gc.reconnMu.Lock()
+		if gc.leaving {
+			gc.reconnMu.Unlock()
+			return
+		}
+		gc.reconnMu.Unlock()
+
+		_ = gc.leaveCallSilent()
+		gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := gc.joinOnce(ctx, chatID)
+		cancel()
+		if err == nil {
+			gc.log.Infof("reconnected after %d attempt(s)", attempt)
+			if gc.OnReconnected != nil {
+				gc.OnReconnected()
+			}
+			return
+		}
+		gc.log.Warnf("reconnect attempt %d failed: %v", attempt, err)
+	}
 }
 
 func extractConnectionParams(updates telegram.Updates) (string, error) {

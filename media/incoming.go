@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/amarnathcjd/gortc/webrtc/rtp"
@@ -36,9 +35,6 @@ func (k TrackKind) String() string {
 	}
 }
 
-// IncomingTrack is a remote RTP track delivered to OnTrack callbacks.
-// It exposes raw RTP for the caller and a Record/RecordToFile convenience
-// that demuxes Opus into ogg or VP8 into IVF.
 type IncomingTrack struct {
 	remote   *webrtc.TrackRemote
 	kind     TrackKind
@@ -85,9 +81,6 @@ func (t *IncomingTrack) ReadRTP() (*rtp.Packet, error) {
 	return pkt, err
 }
 
-// Record starts demuxing the incoming RTP into the given writer. The writer
-// is closed when the track ends or Stop is called. The format is chosen from
-// the track codec: Opus → ogg, VP8 → IVF.
 func (t *IncomingTrack) Record(w io.WriteCloser) error {
 	rec, err := t.newRecorderFor(w)
 	if err != nil {
@@ -107,21 +100,9 @@ func (t *IncomingTrack) Record(w io.WriteCloser) error {
 	return nil
 }
 
-// RecordToFile opens the given file and records the track to it. The
 func (t *IncomingTrack) RecordToFile(path string) error {
 	if path == "" {
 		return errors.New("media: empty record path")
-	}
-	if ext := strings.ToLower(filepathExt(path)); ext != "" {
-		switch t.mimeType {
-		case webrtc.MimeTypeOpus:
-			if ext != ".ogg" && ext != ".opus" {
-				// just a warning tho.
-			}
-		case webrtc.MimeTypeVP8:
-			if ext != ".ivf" {
-			}
-		}
 	}
 	f, err := os.Create(path)
 	if err != nil {
@@ -130,7 +111,6 @@ func (t *IncomingTrack) RecordToFile(path string) error {
 	return t.Record(f)
 }
 
-// Stop ends an active recording started by Record/RecordToFile.
 func (t *IncomingTrack) Stop() error {
 	t.mu.Lock()
 	rec := t.recorder
@@ -156,7 +136,9 @@ func (t *IncomingTrack) newRecorderFor(w io.WriteCloser) (recorder, error) {
 		}
 		return newOggWriter(w, clock, channels)
 	case webrtc.MimeTypeVP8:
-		return newIVFWriter(w, "VP80"), nil
+		return newIVFWriter(w, "VP80", vp8Codec), nil
+	case "video/VP9":
+		return newIVFWriter(w, "VP90", vp9Codec), nil
 	}
 	return nil, fmt.Errorf("media: recording for codec %q not supported", t.mimeType)
 }
@@ -184,13 +166,4 @@ func (t *IncomingTrack) recordLoop() {
 	if rec != nil {
 		_ = rec.Close()
 	}
-}
-
-func filepathExt(path string) string {
-	for i := len(path) - 1; i >= 0 && path[i] != '/' && path[i] != '\\'; i-- {
-		if path[i] == '.' {
-			return path[i:]
-		}
-	}
-	return ""
 }

@@ -74,8 +74,32 @@ var (
 type Option = groupcall.Option
 
 var (
-	WithLogger   = groupcall.WithLogger
-	WithLogLevel = groupcall.WithLogLevel
+	WithLogger     = groupcall.WithLogger
+	WithLogLevel   = groupcall.WithLogLevel
+	WithReconnect  = groupcall.WithReconnect
+	WithVideoCodec = groupcall.WithVideoCodec
+)
+
+const (
+	VideoCodecVP8 = media.VideoCodecVP8
+	VideoCodecVP9 = media.VideoCodecVP9
+)
+
+const (
+	MimeTypeVP8 = "video/VP8"
+	MimeTypeVP9 = "video/VP9"
+)
+
+type (
+	Participant       = groupcall.Participant
+	ParticipantEvent  = groupcall.ParticipantEvent
+	BandwidthEstimate = groupcall.BandwidthEstimate
+)
+
+const (
+	ParticipantJoined  = groupcall.ParticipantJoined
+	ParticipantLeft    = groupcall.ParticipantLeft
+	ParticipantUpdated = groupcall.ParticipantUpdated
 )
 
 func NewLogger(opts ...logger.Option) *Logger { return logger.New(opts...) }
@@ -104,6 +128,27 @@ func (c *Call) OnStreamEnded(fn func(error)) { c.gc.OnStreamEnded = fn }
 // OnTrack fires for each remote audio/video track delivered by the SFU. Use
 // the track's Record / RecordToFile to capture incoming media.
 func (c *Call) OnTrack(fn func(*IncomingTrack)) { c.gc.OnTrack = fn }
+
+// OnReconnecting fires before each reconnect attempt with the attempt number.
+func (c *Call) OnReconnecting(fn func(attempt int)) { c.gc.OnReconnecting = fn }
+
+// OnReconnected fires after a successful mid-call reconnect.
+func (c *Call) OnReconnected(fn func()) { c.gc.OnReconnected = fn }
+
+// OnReconnectFailed fires when reconnect retries are exhausted.
+func (c *Call) OnReconnectFailed(fn func(error)) { c.gc.OnReconnectFailed = fn }
+
+func (c *Call) OnParticipant(fn func(ParticipantEvent, Participant)) {
+	c.gc.OnParticipant = fn
+}
+
+func (c *Call) Participants() []Participant { return c.gc.Participants() }
+
+func (c *Call) OnBandwidthEstimate(fn func(BandwidthEstimate)) {
+	c.gc.OnBandwidthEstimate = fn
+}
+
+func (c *Call) BandwidthEstimate() BandwidthEstimate { return c.gc.BandwidthEstimate() }
 
 // State returns the current connection state.
 func (c *Call) State() string { return c.gc.State() }
