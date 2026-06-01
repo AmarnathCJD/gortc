@@ -38,10 +38,6 @@ defer call.Leave()
 - [`examples/basic`](examples/basic) — join a chat and stream a single file.
 - [`examples/musicbot`](examples/musicbot) — full music bot with queue, pause/resume, skip, volume.
 
-## TODO
-
-- P2P calls (1:1 voice/video).
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
