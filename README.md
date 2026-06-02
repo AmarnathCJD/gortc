@@ -40,4 +40,4 @@ defer call.Leave()
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The WebRTC stack under [`webrtc/`](webrtc) is adapted from [pion](https://github.com/pion) (MIT).
