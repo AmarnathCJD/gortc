@@ -31,7 +31,7 @@ defer call.Leave()
 
 ## Sources
 
-`FromFile`, `FromURL`, `FromReader`, `FromOggOpus`, `FromIVF`, `FromEncoded`, `FromRawPCM`, `FromRawVideo`, plus `Loop` and `Concat` for composition.
+Stream from local files, remote URLs, or any `io.Reader` — gortc transcodes on the fly. Skip the encoder by passing pre-encoded Opus or IVF, or push raw PCM/video frames directly. Compose sources with `Loop` and `Concat`.
 
 ## Examples
 
