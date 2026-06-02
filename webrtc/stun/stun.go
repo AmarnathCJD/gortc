@@ -6,20 +6,21 @@
 package stun
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"hash/crc32"
 	"io"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
-
-	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 var bin = binary.BigEndian
@@ -667,7 +668,7 @@ func CheckSize(_ AttrType, got, expected int) error {
 }
 
 func checkHMAC(got, expected []byte) error {
-	if webrtc.HMACEqual(got, expected) {
+	if subtle.ConstantTimeCompare(got, expected) == 1 {
 		return nil
 	}
 
@@ -919,9 +920,8 @@ func NewShortTermIntegrity(password string) MessageIntegrity {
 type MessageIntegrity []byte
 
 func newHMAC(key, message, buf []byte) []byte {
-	mac := webrtc.AcquireSHA1(key)
+	var mac hash.Hash = hmac.New(sha1.New, key)
 	writeOrPanic(mac, message)
-	defer webrtc.PutSHA1(mac)
 
 	return mac.Sum(buf)
 }
@@ -1306,7 +1306,7 @@ func (a XORMappedAddress) AddToAs(msg *Message, attr AttrType) error {
 	bin.PutUint32(xorValue[0:4], magicCookie)
 	bin.PutUint16(value[0:2], family)
 	bin.PutUint16(value[2:4], uint16(a.Port^magicCookie>>16))
-	webrtc.TransportXorBytes(value[4:4+len(ip)], ip, xorValue)
+	subtle.XORBytes(value[4:4+len(ip)], ip, xorValue)
 	msg.Add(attr, value[:4+len(ip)])
 
 	return nil
@@ -1351,7 +1351,7 @@ func (a *XORMappedAddress) GetFromAs(msg *Message, attr AttrType) error {
 	xorValue := make([]byte, 4+TransactionIDSize)
 	bin.PutUint32(xorValue[0:4], magicCookie)
 	copy(xorValue[4:], msg.TransactionID[:])
-	webrtc.TransportXorBytes(a.IP, value[4:], xorValue)
+	subtle.XORBytes(a.IP, value[4:], xorValue)
 
 	return nil
 }

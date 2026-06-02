@@ -3,7 +3,7 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package dtls
+package webrtc
 
 import (
 	"bytes"
@@ -40,8 +40,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/amarnathcjd/gortc/webrtc"
 
 	"golang.org/x/crypto/cryptobyte"
 )
@@ -265,9 +263,6 @@ func netError(err error) error {
 			if se.Timeout() {
 				return &TimeoutError{Err: err}
 			}
-			if isOpErrorTemporary(se) {
-				return &TemporaryError{Err: err}
-			}
 		}
 	}
 
@@ -467,7 +462,7 @@ type Config struct {
 	RootCAs                       *x509.CertPool
 	ClientCAs                     *x509.CertPool
 	ServerName                    string
-	LoggerFactory                 webrtc.LoggerFactory
+	LoggerFactory                 LoggerFactory
 	MTU                           int
 	ReplayProtectionWindow        int
 	KeyLogWriter                  io.Writer
@@ -586,7 +581,7 @@ type dtlsConfig struct {
 	rootCAs                       *x509.CertPool
 	clientCAs                     *x509.CertPool
 	serverName                    string
-	loggerFactory                 webrtc.LoggerFactory
+	loggerFactory                 LoggerFactory
 	mtu                           int
 	replayProtectionWindow        int
 	keyLogWriter                  io.Writer
@@ -799,7 +794,7 @@ func WithRootCAs(pool *x509.CertPool) Option {
 	})
 }
 
-func WithLoggerFactory(factory webrtc.LoggerFactory) Option {
+func WithLoggerFactory(factory LoggerFactory) Option {
 	return sharedOption(func(c *dtlsConfig) error {
 		c.loggerFactory = factory
 
@@ -1643,7 +1638,7 @@ type State struct {
 	localVerifyData               []byte
 	localKeySignature             []byte
 	peerCertificatesVerified      bool
-	replayDetector                []webrtc.TransportReplayDetector
+	replayDetector                []TransportReplayDetector
 	peerSupportedProtocols        []string
 	NegotiatedProtocol            string
 }
@@ -2192,7 +2187,7 @@ type handshakeConfig struct {
 	connectionIDGenerator         func() []byte
 	helloRandomBytesGenerator     func() [RandomBytesLength]byte
 	onFlightState                 func(flightVal, handshakeState)
-	log                           webrtc.LeveledLogger
+	log                           LeveledLogger
 	keyLogWriter                  io.Writer
 	localGetCertificate           func(*ClientHelloInfo) (*tls.Certificate, error)
 	localGetClientCertificate     func(*CertificateRequestInfo) (*tls.Certificate, error)
@@ -2458,7 +2453,7 @@ type recvHandshakeState struct {
 
 type Conn struct {
 	lock                           sync.RWMutex
-	nextConn                       webrtc.TransportPacketConn
+	nextConn                       TransportPacketConn
 	fragmentBuffer                 *fragmentBuffer
 	handshakeCache                 *handshakeCache
 	decrypted                      chan any
@@ -2473,9 +2468,9 @@ type Conn struct {
 	connectionClosedByUser         bool
 	closeLock                      sync.Mutex
 	closed                         *Closer
-	readDeadline                   *webrtc.TransportDeadline
-	writeDeadline                  *webrtc.TransportDeadline
-	log                            webrtc.LeveledLogger
+	readDeadline                   *TransportDeadline
+	writeDeadline                  *TransportDeadline
+	log                            LeveledLogger
 	reading                        chan struct{}
 	handshakeRecv                  chan recvHandshakeState
 	cancelHandshaker               func()
@@ -2498,7 +2493,7 @@ func createConn(
 
 	loggerFactory := config.LoggerFactory
 	if loggerFactory == nil {
-		loggerFactory = webrtc.NewDefaultLoggerFactory()
+		loggerFactory = NewDefaultLoggerFactory()
 	}
 
 	logger := loggerFactory.NewLogger("dtls")
@@ -2599,7 +2594,7 @@ func createConn(
 
 	conn := &Conn{
 		rAddr:                   rAddr,
-		nextConn:                webrtc.TransportNewPacketConn(nextConn),
+		nextConn:                TransportNewPacketConn(nextConn),
 		handshakeConfig:         handshakeConfig,
 		fragmentBuffer:          newFragmentBuffer(),
 		handshakeCache:          newHandshakeCache(),
@@ -2609,8 +2604,8 @@ func createConn(
 		decrypted: make(chan any, 1),
 		log:       logger,
 
-		readDeadline:  webrtc.TransportNewDeadline(),
-		writeDeadline: webrtc.TransportNewDeadline(),
+		readDeadline:  TransportNewDeadline(),
+		writeDeadline: TransportNewDeadline(),
 
 		reading:               make(chan struct{}, 1),
 		handshakeRecv:         make(chan recvHandshakeState),
@@ -3241,7 +3236,7 @@ func (c *Conn) handleIncomingPacket(
 
 	for len(c.state.replayDetector) <= int(header.Epoch) {
 		c.state.replayDetector = append(c.state.replayDetector,
-			webrtc.TransportNewReplayDetector(c.replayProtectionWindow, MaxSequenceNumber),
+			TransportNewReplayDetector(c.replayProtectionWindow, MaxSequenceNumber),
 		)
 	}
 	markPacketAsValid, ok := c.state.replayDetector[int(header.Epoch)].Check(header.SequenceNumber)
@@ -7972,7 +7967,7 @@ func (h *Handshake) Unmarshal(data []byte) error {
 		return err
 	}
 
-	reportedLen := webrtc.BEUint24(data[1:])
+	reportedLen := BEUint24(data[1:])
 	if uint32(len(data)-HandshakeHeaderLength) != reportedLen {
 		return errHsLengthMismatch
 	} else if reportedLen != h.Header.FragmentLength {
@@ -8023,10 +8018,10 @@ func (h *HandshakeHeader) Marshal() ([]byte, error) {
 	out := make([]byte, HandshakeHeaderLength)
 
 	out[0] = byte(h.Type)
-	webrtc.PutBEUint24(out[1:], h.Length)
+	PutBEUint24(out[1:], h.Length)
 	binary.BigEndian.PutUint16(out[4:], h.MessageSequence)
-	webrtc.PutBEUint24(out[6:], h.FragmentOffset)
-	webrtc.PutBEUint24(out[9:], h.FragmentLength)
+	PutBEUint24(out[6:], h.FragmentOffset)
+	PutBEUint24(out[9:], h.FragmentLength)
 
 	return out, nil
 }
@@ -8037,10 +8032,10 @@ func (h *HandshakeHeader) Unmarshal(data []byte) error {
 	}
 
 	h.Type = HandshakeType(data[0])
-	h.Length = webrtc.BEUint24(data[1:])
+	h.Length = BEUint24(data[1:])
 	h.MessageSequence = binary.BigEndian.Uint16(data[4:])
-	h.FragmentOffset = webrtc.BEUint24(data[6:])
-	h.FragmentLength = webrtc.BEUint24(data[9:])
+	h.FragmentOffset = BEUint24(data[6:])
+	h.FragmentLength = BEUint24(data[9:])
 
 	return nil
 }
@@ -8064,12 +8059,12 @@ func (m *MessageCertificate) Marshal() ([]byte, error) {
 
 		out = append(out, make([]byte, handshakeMessageCertificateLengthFieldSize)...)
 
-		webrtc.PutBEUint24(out[len(out)-handshakeMessageCertificateLengthFieldSize:], uint32(len(r)))
+		PutBEUint24(out[len(out)-handshakeMessageCertificateLengthFieldSize:], uint32(len(r)))
 
 		out = append(out, append([]byte{}, r...)...)
 	}
 
-	webrtc.PutBEUint24(out[0:], uint32(len(out[handshakeMessageCertificateLengthFieldSize:])))
+	PutBEUint24(out[0:], uint32(len(out[handshakeMessageCertificateLengthFieldSize:])))
 
 	return out, nil
 }
@@ -8079,7 +8074,7 @@ func (m *MessageCertificate) Unmarshal(data []byte) error {
 		return errHsBufferTooSmall
 	}
 
-	if certificateBodyLen := int(webrtc.BEUint24(
+	if certificateBodyLen := int(BEUint24(
 		data,
 	)); certificateBodyLen+handshakeMessageCertificateLengthFieldSize != len(data) {
 		return errHsLengthMismatch
@@ -8087,7 +8082,7 @@ func (m *MessageCertificate) Unmarshal(data []byte) error {
 
 	offset := handshakeMessageCertificateLengthFieldSize
 	for offset < len(data) {
-		certificateLen := int(webrtc.BEUint24(data[offset:]))
+		certificateLen := int(BEUint24(data[offset:]))
 		offset += handshakeMessageCertificateLengthFieldSize
 
 		if offset+certificateLen > len(data) {
@@ -8818,7 +8813,7 @@ func (h *RecordLayerHeader) Marshal() ([]byte, error) {
 	out[1] = h.Version.Major
 	out[2] = h.Version.Minor
 	binary.BigEndian.PutUint16(out[3:], h.Epoch)
-	webrtc.PutBEUint48(out[5:], h.SequenceNumber)
+	PutBEUint48(out[5:], h.SequenceNumber)
 	copy(out[11:11+len(h.ConnectionID)], h.ConnectionID)
 	binary.BigEndian.PutUint16(out[hs-2:], h.ContentLen)
 
@@ -9497,7 +9492,7 @@ func (c *CBC) Decrypt(header RecordLayerHeader, in []byte) ([]byte, error) {
 	case header.ContentType == ContentTypeChangeCipherSpec:
 
 		return in, nil
-	case len(body)%blockSize != 0 || len(body) < blockSize+webrtc.MaxInt(mac.Size()+1, blockSize):
+	case len(body)%blockSize != 0 || len(body) < blockSize+MaxInt(mac.Size()+1, blockSize):
 		return nil, errNotEnoughRoomForNonce
 	}
 
@@ -9552,7 +9547,7 @@ func (c *CBC) hmac(
 	msg := make([]byte, 13)
 
 	binary.BigEndian.PutUint16(msg, epoch)
-	webrtc.PutBEUint48(msg[2:], sequenceNumber)
+	PutBEUint48(msg[2:], sequenceNumber)
 	msg[8] = byte(contentType)
 	msg[9] = protocolVersion.Major
 	msg[10] = protocolVersion.Minor
@@ -9594,7 +9589,7 @@ func (c *CBC) hmacCID(
 	msg.AddUint8(protocolVersion.Major)
 	msg.AddUint8(protocolVersion.Minor)
 	msg.AddUint16(epoch)
-	webrtc.AddUint48(&msg, sequenceNumber)
+	AddUint48(&msg, sequenceNumber)
 	msg.AddBytes(cid)
 	msg.AddUint16(uint16(len(payload)))
 	msg.AddBytes(ip.Content)
@@ -9804,7 +9799,7 @@ func generateAEADAdditionalDataCID(h *RecordLayerHeader, payloadLen int) []byte 
 	builder.AddUint8(h.Version.Major)
 	builder.AddUint8(h.Version.Minor)
 	builder.AddUint16(h.Epoch)
-	webrtc.AddUint48(&builder, h.SequenceNumber)
+	AddUint48(&builder, h.SequenceNumber)
 	builder.AddBytes(h.ConnectionID)
 	builder.AddUint16(uint16(payloadLen))
 

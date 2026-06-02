@@ -6,7 +6,6 @@
 package webrtc
 
 import (
-	wutil "github.com/amarnathcjd/gortc/webrtc"
 	"container/list"
 	"context"
 	"crypto"
@@ -25,8 +24,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/amarnathcjd/gortc/webrtc/dtls"
-	"github.com/amarnathcjd/gortc/webrtc/ice"
+	wutil "github.com/amarnathcjd/gortc/webrtc"
+
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
 
 	"github.com/amarnathcjd/gortc/webrtc/sdp"
@@ -281,7 +280,7 @@ type DTLSTransport struct {
 	srtpProtectionProfile       srtp.ProtectionProfile
 	onStateChangeHandler        func(DTLSTransportState)
 	internalOnCloseHandler      func()
-	conn                        *dtls.Conn
+	conn                        *wutil.Conn
 	srtpSession, srtcpSession   atomic.Value
 	srtpEndpoint, srtcpEndpoint *Endpoint
 	simulcastStreams            []simulcastStreamPair
@@ -578,70 +577,70 @@ func (t *DTLSTransport) prepareStart(remoteParameters DTLSParameters) (DTLSRole,
 	}, nil
 }
 
-func (t *DTLSTransport) dtlsSharedOptions(certificate tls.Certificate) []dtls.Option {
-	sharedOpts := []dtls.Option{
-		dtls.WithCertificates(certificate),
-		dtls.WithSRTPProtectionProfiles(t.srtpProtectionProfiles()...),
-		dtls.WithExtendedMasterSecret(t.api.settingEngine.dtls.extendedMasterSecret),
-		dtls.WithInsecureSkipVerify(!t.api.settingEngine.dtls.disableInsecureSkipVerify),
-		dtls.WithLoggerFactory(t.api.settingEngine.LoggerFactory),
-		dtls.WithVerifyPeerCertificate(t.verifyPeerCertificateFunc()),
+func (t *DTLSTransport) dtlsSharedOptions(certificate tls.Certificate) []wutil.Option {
+	sharedOpts := []wutil.Option{
+		wutil.WithCertificates(certificate),
+		wutil.WithSRTPProtectionProfiles(t.srtpProtectionProfiles()...),
+		wutil.WithExtendedMasterSecret(t.api.settingEngine.dtls.extendedMasterSecret),
+		wutil.WithInsecureSkipVerify(!t.api.settingEngine.dtls.disableInsecureSkipVerify),
+		wutil.WithLoggerFactory(t.api.settingEngine.LoggerFactory),
+		wutil.WithVerifyPeerCertificate(t.verifyPeerCertificateFunc()),
 	}
 
 	if t.api.settingEngine.dtls.customCipherSuites != nil {
 		sharedOpts = append(
 			sharedOpts,
-			dtls.WithCustomCipherSuites(t.api.settingEngine.dtls.customCipherSuites),
+			wutil.WithCustomCipherSuites(t.api.settingEngine.dtls.customCipherSuites),
 		)
 	}
 
 	if t.api.settingEngine.dtls.retransmissionInterval > 0 {
 		sharedOpts = append(
 			sharedOpts,
-			dtls.WithFlightInterval(t.api.settingEngine.dtls.retransmissionInterval),
+			wutil.WithFlightInterval(t.api.settingEngine.dtls.retransmissionInterval),
 		)
 	}
 
 	if t.api.settingEngine.replayProtection.DTLS != nil {
 		sharedOpts = append(
 			sharedOpts,
-			dtls.WithReplayProtectionWindow(int(*t.api.settingEngine.replayProtection.DTLS)),
+			wutil.WithReplayProtectionWindow(int(*t.api.settingEngine.replayProtection.DTLS)),
 		)
 	}
 
 	if t.api.settingEngine.dtls.cipherSuites != nil {
 		sharedOpts = append(
 			sharedOpts,
-			dtls.WithCipherSuites(t.api.settingEngine.dtls.cipherSuites...),
+			wutil.WithCipherSuites(t.api.settingEngine.dtls.cipherSuites...),
 		)
 	}
 
 	if len(t.api.settingEngine.dtls.ellipticCurves) > 0 {
 		sharedOpts = append(
 			sharedOpts,
-			dtls.WithEllipticCurves(t.api.settingEngine.dtls.ellipticCurves...),
+			wutil.WithEllipticCurves(t.api.settingEngine.dtls.ellipticCurves...),
 		)
 	}
 
 	if t.api.settingEngine.dtls.rootCAs != nil {
-		sharedOpts = append(sharedOpts, dtls.WithRootCAs(t.api.settingEngine.dtls.rootCAs))
+		sharedOpts = append(sharedOpts, wutil.WithRootCAs(t.api.settingEngine.dtls.rootCAs))
 	}
 
 	if t.api.settingEngine.dtls.keyLogWriter != nil {
-		sharedOpts = append(sharedOpts, dtls.WithKeyLogWriter(t.api.settingEngine.dtls.keyLogWriter))
+		sharedOpts = append(sharedOpts, wutil.WithKeyLogWriter(t.api.settingEngine.dtls.keyLogWriter))
 	}
 
 	if len(t.api.settingEngine.dtls.supportedProtocols) > 0 {
 		sharedOpts = append(
 			sharedOpts,
-			dtls.WithSupportedProtocols(t.api.settingEngine.dtls.supportedProtocols...),
+			wutil.WithSupportedProtocols(t.api.settingEngine.dtls.supportedProtocols...),
 		)
 	}
 
 	return sharedOpts
 }
 
-func (t *DTLSTransport) srtpProtectionProfiles() []dtls.SRTPProtectionProfile {
+func (t *DTLSTransport) srtpProtectionProfiles() []wutil.SRTPProtectionProfile {
 	if len(t.api.settingEngine.srtpProtectionProfiles) > 0 {
 		return t.api.settingEngine.srtpProtectionProfiles
 	}
@@ -675,12 +674,12 @@ func (t *DTLSTransport) verifyPeerCertificateFunc() func([][]byte, [][]*x509.Cer
 func (t *DTLSTransport) connectDTLS(
 	dtlsEndpoint *Endpoint,
 	role DTLSRole,
-	sharedOpts []dtls.Option,
-) (*dtls.Conn, error) {
+	sharedOpts []wutil.Option,
+) (*wutil.Conn, error) {
 	if role == DTLSRoleClient {
 		clientOpts := t.toDTLSClientOptions(sharedOpts)
 
-		return dtls.ClientWithOptions(
+		return wutil.ClientWithOptions(
 			dtlsEndpoint,
 			dtlsEndpoint.RemoteAddr(),
 			clientOpts...,
@@ -689,49 +688,49 @@ func (t *DTLSTransport) connectDTLS(
 
 	serverOpts := t.toDTLSServerOptions(sharedOpts)
 
-	return dtls.ServerWithOptions(
+	return wutil.ServerWithOptions(
 		dtlsEndpoint,
 		dtlsEndpoint.RemoteAddr(),
 		serverOpts...,
 	)
 }
 
-func (t *DTLSTransport) toDTLSServerOptions(sharedOpts []dtls.Option) []dtls.ServerOption {
-	serverOpts := make([]dtls.ServerOption, 0, len(sharedOpts)+5)
+func (t *DTLSTransport) toDTLSServerOptions(sharedOpts []wutil.Option) []wutil.ServerOption {
+	serverOpts := make([]wutil.ServerOption, 0, len(sharedOpts)+5)
 	for _, opt := range sharedOpts {
 		serverOpts = append(serverOpts, opt)
 	}
 
-	clientAuth := dtls.RequireAnyClientCert
+	clientAuth := wutil.RequireAnyClientCert
 	if t.api.settingEngine.dtls.clientAuth != nil {
 		clientAuth = *t.api.settingEngine.dtls.clientAuth
 	}
 
 	serverOpts = append(serverOpts,
-		dtls.WithClientAuth(clientAuth),
-		dtls.WithClientCAs(t.api.settingEngine.dtls.clientCAs),
-		dtls.WithInsecureSkipVerifyHello(t.api.settingEngine.dtls.insecureSkipHelloVerify),
+		wutil.WithClientAuth(clientAuth),
+		wutil.WithClientCAs(t.api.settingEngine.dtls.clientCAs),
+		wutil.WithInsecureSkipVerifyHello(t.api.settingEngine.dtls.insecureSkipHelloVerify),
 	)
 
 	if t.api.settingEngine.dtls.serverHelloMessageHook != nil {
 		serverOpts = append(
 			serverOpts,
-			dtls.WithServerHelloMessageHook(t.api.settingEngine.dtls.serverHelloMessageHook),
+			wutil.WithServerHelloMessageHook(t.api.settingEngine.dtls.serverHelloMessageHook),
 		)
 	}
 
 	if t.api.settingEngine.dtls.certificateRequestMessageHook != nil {
 		serverOpts = append(
 			serverOpts,
-			dtls.WithCertificateRequestMessageHook(t.api.settingEngine.dtls.certificateRequestMessageHook),
+			wutil.WithCertificateRequestMessageHook(t.api.settingEngine.dtls.certificateRequestMessageHook),
 		)
 	}
 
 	return serverOpts
 }
 
-func (t *DTLSTransport) toDTLSClientOptions(sharedOpts []dtls.Option) []dtls.ClientOption {
-	clientOpts := make([]dtls.ClientOption, 0, len(sharedOpts)+1)
+func (t *DTLSTransport) toDTLSClientOptions(sharedOpts []wutil.Option) []wutil.ClientOption {
+	clientOpts := make([]wutil.ClientOption, 0, len(sharedOpts)+1)
 	for _, opt := range sharedOpts {
 		clientOpts = append(clientOpts, opt)
 	}
@@ -739,14 +738,14 @@ func (t *DTLSTransport) toDTLSClientOptions(sharedOpts []dtls.Option) []dtls.Cli
 	if t.api.settingEngine.dtls.clientHelloMessageHook != nil {
 		clientOpts = append(
 			clientOpts,
-			dtls.WithClientHelloMessageHook(t.api.settingEngine.dtls.clientHelloMessageHook),
+			wutil.WithClientHelloMessageHook(t.api.settingEngine.dtls.clientHelloMessageHook),
 		)
 	}
 
 	return clientOpts
 }
 
-func (t *DTLSTransport) handshakeDTLS(dtlsConn *dtls.Conn) error {
+func (t *DTLSTransport) handshakeDTLS(dtlsConn *wutil.Conn) error {
 	if t.api.settingEngine.dtls.connectContextMaker == nil {
 		return dtlsConn.Handshake()
 	}
@@ -759,7 +758,7 @@ func (t *DTLSTransport) handshakeDTLS(dtlsConn *dtls.Conn) error {
 	return dtlsConn.HandshakeContext(handshakeCtx)
 }
 
-func (t *DTLSTransport) completeStart(dtlsConn *dtls.Conn) error {
+func (t *DTLSTransport) completeStart(dtlsConn *wutil.Conn) error {
 	srtpProtectionProfile, err := srtpProtectionProfileFromDTLSConn(dtlsConn)
 
 	t.lock.Lock()
@@ -786,7 +785,7 @@ func (t *DTLSTransport) failStart(err error) error {
 	return err
 }
 
-func srtpProtectionProfileFromDTLSConn(dtlsConn *dtls.Conn) (srtp.ProtectionProfile, error) {
+func srtpProtectionProfileFromDTLSConn(dtlsConn *wutil.Conn) (srtp.ProtectionProfile, error) {
 	srtpProfile, ok := dtlsConn.SelectedSRTPProtectionProfile()
 	if !ok {
 		return 0, ErrNoSRTPProtectionProfile
@@ -795,15 +794,15 @@ func srtpProtectionProfileFromDTLSConn(dtlsConn *dtls.Conn) (srtp.ProtectionProf
 	return srtpProtectionProfileFromDTLS(srtpProfile)
 }
 
-func srtpProtectionProfileFromDTLS(srtpProfile dtls.SRTPProtectionProfile) (srtp.ProtectionProfile, error) {
+func srtpProtectionProfileFromDTLS(srtpProfile wutil.SRTPProtectionProfile) (srtp.ProtectionProfile, error) {
 	switch srtpProfile {
-	case dtls.SRTP_AEAD_AES_128_GCM:
+	case wutil.SRTP_AEAD_AES_128_GCM:
 		return srtp.ProtectionProfileAeadAes128Gcm, nil
-	case dtls.SRTP_AEAD_AES_256_GCM:
+	case wutil.SRTP_AEAD_AES_256_GCM:
 		return srtp.ProtectionProfileAeadAes256Gcm, nil
-	case dtls.SRTP_AES128_CM_HMAC_SHA1_80:
+	case wutil.SRTP_AES128_CM_HMAC_SHA1_80:
 		return srtp.ProtectionProfileAes128CmHmacSha1_80, nil
-	case dtls.SRTP_NULL_HMAC_SHA1_80:
+	case wutil.SRTP_NULL_HMAC_SHA1_80:
 		return srtp.ProtectionProfileNullHmacSha1_80, nil
 	default:
 		return 0, ErrNoSRTPProtectionProfile
@@ -831,7 +830,7 @@ func (t *DTLSTransport) Stop() error {
 
 	if t.conn != nil {
 
-		if err := t.conn.Close(); err != nil && !errors.Is(err, dtls.ErrConnClosed) {
+		if err := t.conn.Close(); err != nil && !errors.Is(err, wutil.ErrConnClosed) {
 			closeErrs = append(closeErrs, err)
 		}
 	}
@@ -842,12 +841,12 @@ func (t *DTLSTransport) Stop() error {
 
 func (t *DTLSTransport) validateFingerPrint(remoteCert *x509.Certificate) error {
 	for _, fp := range t.remoteParameters.Fingerprints {
-		hashAlgo, err := dtls.HashFromString(fp.Algorithm)
+		hashAlgo, err := wutil.HashFromString(fp.Algorithm)
 		if err != nil {
 			return err
 		}
 
-		remoteValue, err := dtls.Fingerprint(remoteCert, hashAlgo)
+		remoteValue, err := wutil.Fingerprint(remoteCert, hashAlgo)
 		if err != nil {
 			return err
 		}
@@ -939,7 +938,7 @@ type ICEGatherer struct {
 	state                      ICEGathererState
 	validatedServers           []*stun.URI
 	gatherPolicy               ICETransportPolicy
-	agent                      *ice.Agent
+	agent                      *wutil.Agent
 	onLocalCandidateHandler    atomic.Value
 	onStateChangeHandler       atomic.Value
 	onGatheringCompleteHandler atomic.Value
@@ -947,7 +946,7 @@ type ICEGatherer struct {
 	sdpMid                     atomic.Value
 	sdpMLineIndex              atomic.Uint32
 	candidatePoolLock          sync.Mutex
-	candidatePool              []ice.Candidate
+	candidatePool              []wutil.Candidate
 	iceCandidatePoolSize       uint8
 }
 
@@ -959,8 +958,8 @@ const (
 	ICEAddressRewriteAppend
 )
 
-func (r ICEAddressRewriteMode) toICE() ice.AddressRewriteMode {
-	return ice.AddressRewriteMode(r)
+func (r ICEAddressRewriteMode) toICE() wutil.AddressRewriteMode {
+	return wutil.AddressRewriteMode(r)
 }
 
 type ICEAddressRewriteRule struct {
@@ -973,12 +972,12 @@ type ICEAddressRewriteRule struct {
 	Networks        []NetworkType
 }
 
-func (r ICEAddressRewriteRule) toICE() ice.AddressRewriteRule {
+func (r ICEAddressRewriteRule) toICE() wutil.AddressRewriteRule {
 	candidateType := r.AsCandidateType.toICE()
 	mode := r.Mode.toICE()
 	networks := toICENetworkTypes(r.Networks)
 
-	rule := ice.AddressRewriteRule{
+	rule := wutil.AddressRewriteRule{
 		External:        append([]string(nil), r.External...),
 		Local:           r.Local,
 		Iface:           r.Iface,
@@ -1011,7 +1010,7 @@ func (api *API) NewICEGatherer(opts ICEGatherOptions) (*ICEGatherer, error) {
 		log:                  api.settingEngine.LoggerFactory.NewLogger("ice"),
 		sdpMid:               atomic.Value{},
 		sdpMLineIndex:        atomic.Uint32{},
-		candidatePool:        make([]ice.Candidate, 0, opts.ICECandidatePoolSize),
+		candidatePool:        make([]wutil.Candidate, 0, opts.ICECandidatePoolSize),
 		iceCandidatePoolSize: opts.ICECandidatePoolSize,
 	}, nil
 }
@@ -1034,7 +1033,7 @@ func (g *ICEGatherer) updateServers(servers []ICEServer, policy ICETransportPoli
 
 	if g.agent != nil && (g.State() != ICEGathererStateGathering ||
 		g.iceCandidatePoolSize == 0) {
-		return g.agent.UpdateOptions(ice.WithUrls(validatedServers))
+		return g.agent.UpdateOptions(wutil.WithUrls(validatedServers))
 	}
 
 	return nil
@@ -1053,7 +1052,7 @@ func (g *ICEGatherer) createAgent() error {
 		return err
 	}
 
-	agent, err := ice.NewAgentWithOptions(options...)
+	agent, err := wutil.NewAgentWithOptions(options...)
 	if err != nil {
 		return err
 	}
@@ -1063,14 +1062,14 @@ func (g *ICEGatherer) createAgent() error {
 	return nil
 }
 
-func (g *ICEGatherer) buildAgentOptions() ([]ice.AgentOption, error) {
+func (g *ICEGatherer) buildAgentOptions() ([]wutil.AgentOption, error) {
 	candidateTypes := g.resolveCandidateTypes()
 	nat1To1CandiTyp := g.resolveNAT1To1CandidateType()
 	mDNSMode := g.sanitizedMDNSMode()
 
 	options := g.baseAgentOptions(mDNSMode)
 	if len(candidateTypes) > 0 {
-		options = append(options, ice.WithCandidateTypes(candidateTypes))
+		options = append(options, wutil.WithCandidateTypes(candidateTypes))
 	}
 
 	options = append(options, g.credentialOptions()...)
@@ -1089,76 +1088,76 @@ func (g *ICEGatherer) buildAgentOptions() ([]ice.AgentOption, error) {
 		requestedNetworkTypes = supportedNetworkTypes()
 	}
 
-	return append(options, ice.WithNetworkTypes(toICENetworkTypes(requestedNetworkTypes))), nil
+	return append(options, wutil.WithNetworkTypes(toICENetworkTypes(requestedNetworkTypes))), nil
 }
 
-func (g *ICEGatherer) resolveCandidateTypes() []ice.CandidateType {
+func (g *ICEGatherer) resolveCandidateTypes() []wutil.CandidateType {
 	if g.api.settingEngine.candidates.ICELite {
-		return []ice.CandidateType{ice.CandidateTypeHost}
+		return []wutil.CandidateType{wutil.CandidateTypeHost}
 	}
 
 	switch g.gatherPolicy {
 	case ICETransportPolicyRelay:
-		return []ice.CandidateType{ice.CandidateTypeRelay}
+		return []wutil.CandidateType{wutil.CandidateTypeRelay}
 	case ICETransportPolicyNoHost:
-		return []ice.CandidateType{ice.CandidateTypeServerReflexive, ice.CandidateTypeRelay}
+		return []wutil.CandidateType{wutil.CandidateTypeServerReflexive, wutil.CandidateTypeRelay}
 	default:
 	}
 
 	return nil
 }
 
-func (g *ICEGatherer) resolveNAT1To1CandidateType() ice.CandidateType {
+func (g *ICEGatherer) resolveNAT1To1CandidateType() wutil.CandidateType {
 	switch g.api.settingEngine.candidates.NAT1To1IPCandidateType {
 	case ICECandidateTypeHost:
-		return ice.CandidateTypeHost
+		return wutil.CandidateTypeHost
 	case ICECandidateTypeSrflx:
-		return ice.CandidateTypeServerReflexive
+		return wutil.CandidateTypeServerReflexive
 	default:
-		return ice.CandidateTypeUnspecified
+		return wutil.CandidateTypeUnspecified
 	}
 }
 
-func (g *ICEGatherer) sanitizedMDNSMode() ice.MulticastDNSMode {
+func (g *ICEGatherer) sanitizedMDNSMode() wutil.MulticastDNSMode {
 	mode := g.api.settingEngine.candidates.MulticastDNSMode
-	if mode == ice.MulticastDNSModeDisabled || mode == ice.MulticastDNSModeQueryAndGather {
+	if mode == wutil.MulticastDNSModeDisabled || mode == wutil.MulticastDNSModeQueryAndGather {
 		return mode
 	}
 
-	return ice.MulticastDNSModeQueryOnly
+	return wutil.MulticastDNSModeQueryOnly
 }
 
-func (g *ICEGatherer) baseAgentOptions(mDNSMode ice.MulticastDNSMode) []ice.AgentOption {
-	return []ice.AgentOption{
-		ice.WithICELite(g.api.settingEngine.candidates.ICELite),
-		ice.WithUrls(g.validatedServers),
-		ice.WithPortRange(g.api.settingEngine.ephemeralUDP.PortMin, g.api.settingEngine.ephemeralUDP.PortMax),
-		ice.WithLoggerFactory(g.api.settingEngine.LoggerFactory),
-		ice.WithInterfaceFilter(g.api.settingEngine.candidates.InterfaceFilter),
-		ice.WithIPFilter(g.api.settingEngine.candidates.IPFilter),
-		ice.WithRemoteIPFilter(g.api.settingEngine.candidates.RemoteIPFilter),
-		ice.WithNet(g.api.settingEngine.net),
-		ice.WithMulticastDNSMode(mDNSMode),
-		ice.WithTCPMux(g.api.settingEngine.iceTCPMux),
-		ice.WithUDPMux(g.api.settingEngine.iceUDPMux),
-		ice.WithProxyDialer(g.api.settingEngine.iceProxyDialer),
-		ice.WithBindingRequestHandler(g.api.settingEngine.iceBindingRequestHandler),
+func (g *ICEGatherer) baseAgentOptions(mDNSMode wutil.MulticastDNSMode) []wutil.AgentOption {
+	return []wutil.AgentOption{
+		wutil.WithICELite(g.api.settingEngine.candidates.ICELite),
+		wutil.WithUrls(g.validatedServers),
+		wutil.WithPortRange(g.api.settingEngine.ephemeralUDP.PortMin, g.api.settingEngine.ephemeralUDP.PortMax),
+		wutil.WithICELoggerFactory(g.api.settingEngine.LoggerFactory),
+		wutil.WithInterfaceFilter(g.api.settingEngine.candidates.InterfaceFilter),
+		wutil.WithIPFilter(g.api.settingEngine.candidates.IPFilter),
+		wutil.WithRemoteIPFilter(g.api.settingEngine.candidates.RemoteIPFilter),
+		wutil.WithNet(g.api.settingEngine.net),
+		wutil.WithMulticastDNSMode(mDNSMode),
+		wutil.WithTCPMux(g.api.settingEngine.iceTCPMux),
+		wutil.WithUDPMux(g.api.settingEngine.iceUDPMux),
+		wutil.WithProxyDialer(g.api.settingEngine.iceProxyDialer),
+		wutil.WithBindingRequestHandler(g.api.settingEngine.iceBindingRequestHandler),
 	}
 }
 
-func (g *ICEGatherer) credentialOptions() []ice.AgentOption {
+func (g *ICEGatherer) credentialOptions() []wutil.AgentOption {
 	ufrag := g.api.settingEngine.candidates.UsernameFragment
 	pass := g.api.settingEngine.candidates.Password
 	if ufrag == "" && pass == "" {
 		return nil
 	}
 
-	return []ice.AgentOption{
-		ice.WithLocalCredentials(g.api.settingEngine.candidates.UsernameFragment, g.api.settingEngine.candidates.Password),
+	return []wutil.AgentOption{
+		wutil.WithLocalCredentials(g.api.settingEngine.candidates.UsernameFragment, g.api.settingEngine.candidates.Password),
 	}
 }
 
-func (g *ICEGatherer) addressRewriteOptions(candidateType ice.CandidateType) ([]ice.AgentOption, error) {
+func (g *ICEGatherer) addressRewriteOptions(candidateType wutil.CandidateType) ([]wutil.AgentOption, error) {
 	rules := g.api.settingEngine.candidates.addressRewriteRules
 	nat1To1IPs := g.api.settingEngine.candidates.NAT1To1IPs
 	if len(rules) > 0 && len(nat1To1IPs) > 0 {
@@ -1166,15 +1165,15 @@ func (g *ICEGatherer) addressRewriteOptions(candidateType ice.CandidateType) ([]
 	}
 
 	if len(rules) > 0 {
-		return []ice.AgentOption{ice.WithAddressRewriteRules(rules...)}, nil
+		return []wutil.AgentOption{wutil.WithAddressRewriteRules(rules...)}, nil
 	}
 
 	if len(nat1To1IPs) == 0 {
 		return nil, nil
 	}
 
-	return []ice.AgentOption{
-		ice.WithAddressRewriteRules(
+	return []wutil.AgentOption{
+		wutil.WithAddressRewriteRules(
 			legacyNAT1To1AddressRewriteRules(
 				nat1To1IPs,
 				candidateType,
@@ -1183,73 +1182,73 @@ func (g *ICEGatherer) addressRewriteOptions(candidateType ice.CandidateType) ([]
 	}, nil
 }
 
-func (g *ICEGatherer) timeoutOptions() []ice.AgentOption {
-	opts := make([]ice.AgentOption, 0, 8)
+func (g *ICEGatherer) timeoutOptions() []wutil.AgentOption {
+	opts := make([]wutil.AgentOption, 0, 8)
 
 	if g.api.settingEngine.timeout.ICEDisconnectedTimeout != nil {
-		opts = append(opts, ice.WithDisconnectedTimeout(*g.api.settingEngine.timeout.ICEDisconnectedTimeout))
+		opts = append(opts, wutil.WithDisconnectedTimeout(*g.api.settingEngine.timeout.ICEDisconnectedTimeout))
 	}
 	if g.api.settingEngine.timeout.ICEFailedTimeout != nil {
-		opts = append(opts, ice.WithFailedTimeout(*g.api.settingEngine.timeout.ICEFailedTimeout))
+		opts = append(opts, wutil.WithFailedTimeout(*g.api.settingEngine.timeout.ICEFailedTimeout))
 	}
 	if g.api.settingEngine.timeout.ICEKeepaliveInterval != nil {
-		opts = append(opts, ice.WithKeepaliveInterval(*g.api.settingEngine.timeout.ICEKeepaliveInterval))
+		opts = append(opts, wutil.WithKeepaliveInterval(*g.api.settingEngine.timeout.ICEKeepaliveInterval))
 	}
 	if g.api.settingEngine.timeout.ICEHostAcceptanceMinWait != nil {
-		opts = append(opts, ice.WithHostAcceptanceMinWait(*g.api.settingEngine.timeout.ICEHostAcceptanceMinWait))
+		opts = append(opts, wutil.WithHostAcceptanceMinWait(*g.api.settingEngine.timeout.ICEHostAcceptanceMinWait))
 	}
 	if g.api.settingEngine.timeout.ICESrflxAcceptanceMinWait != nil {
-		opts = append(opts, ice.WithSrflxAcceptanceMinWait(*g.api.settingEngine.timeout.ICESrflxAcceptanceMinWait))
+		opts = append(opts, wutil.WithSrflxAcceptanceMinWait(*g.api.settingEngine.timeout.ICESrflxAcceptanceMinWait))
 	}
 	if g.api.settingEngine.timeout.ICEPrflxAcceptanceMinWait != nil {
-		opts = append(opts, ice.WithPrflxAcceptanceMinWait(*g.api.settingEngine.timeout.ICEPrflxAcceptanceMinWait))
+		opts = append(opts, wutil.WithPrflxAcceptanceMinWait(*g.api.settingEngine.timeout.ICEPrflxAcceptanceMinWait))
 	}
 	if g.api.settingEngine.timeout.ICERelayAcceptanceMinWait != nil {
-		opts = append(opts, ice.WithRelayAcceptanceMinWait(*g.api.settingEngine.timeout.ICERelayAcceptanceMinWait))
+		opts = append(opts, wutil.WithRelayAcceptanceMinWait(*g.api.settingEngine.timeout.ICERelayAcceptanceMinWait))
 	}
 	if g.api.settingEngine.timeout.ICESTUNGatherTimeout != nil {
-		opts = append(opts, ice.WithSTUNGatherTimeout(*g.api.settingEngine.timeout.ICESTUNGatherTimeout))
+		opts = append(opts, wutil.WithSTUNGatherTimeout(*g.api.settingEngine.timeout.ICESTUNGatherTimeout))
 	}
 
 	return opts
 }
 
-func (g *ICEGatherer) miscOptions() []ice.AgentOption {
-	opts := make([]ice.AgentOption, 0, 4)
+func (g *ICEGatherer) miscOptions() []wutil.AgentOption {
+	opts := make([]wutil.AgentOption, 0, 4)
 
 	if g.api.settingEngine.candidates.MulticastDNSHostName != "" {
-		opts = append(opts, ice.WithMulticastDNSHostName(g.api.settingEngine.candidates.MulticastDNSHostName))
+		opts = append(opts, wutil.WithMulticastDNSHostName(g.api.settingEngine.candidates.MulticastDNSHostName))
 	}
 
 	if g.api.settingEngine.candidates.IncludeLoopbackCandidate {
-		opts = append(opts, ice.WithIncludeLoopback())
+		opts = append(opts, wutil.WithIncludeLoopback())
 	}
 
 	if g.api.settingEngine.iceDisableActiveTCP {
-		opts = append(opts, ice.WithDisableActiveTCP())
+		opts = append(opts, wutil.WithDisableActiveTCP())
 	}
 
 	if g.api.settingEngine.iceMaxBindingRequests != nil {
-		opts = append(opts, ice.WithMaxBindingRequests(*g.api.settingEngine.iceMaxBindingRequests))
+		opts = append(opts, wutil.WithMaxBindingRequests(*g.api.settingEngine.iceMaxBindingRequests))
 	}
 
 	return opts
 }
 
-func (g *ICEGatherer) renominationOptions() []ice.AgentOption {
+func (g *ICEGatherer) renominationOptions() []wutil.AgentOption {
 	renom := g.api.settingEngine.renomination
 	if !renom.enabled && !renom.automatic {
 		return nil
 	}
 
 	generator := renom.generator
-	opts := []ice.AgentOption{
-		ice.WithRenomination(func() uint32 {
+	opts := []wutil.AgentOption{
+		wutil.WithRenomination(func() uint32 {
 			return generator()
 		}),
 	}
 	if renom.attributeType != nil {
-		opts = append(opts, ice.WithNominationAttribute(*renom.attributeType))
+		opts = append(opts, wutil.WithNominationAttribute(*renom.attributeType))
 	}
 
 	if renom.automatic {
@@ -1258,21 +1257,21 @@ func (g *ICEGatherer) renominationOptions() []ice.AgentOption {
 			interval = *renom.automaticInterval
 		}
 
-		opts = append(opts, ice.WithAutomaticRenomination(interval))
+		opts = append(opts, wutil.WithAutomaticRenomination(interval))
 	}
 
 	return opts
 }
 
-func legacyNAT1To1AddressRewriteRules(ips []string, candidateType ice.CandidateType) []ice.AddressRewriteRule {
+func legacyNAT1To1AddressRewriteRules(ips []string, candidateType wutil.CandidateType) []wutil.AddressRewriteRule {
 	catchAll := make([]string, 0, len(ips))
-	rules := make([]ice.AddressRewriteRule, 0, len(ips)+1)
+	rules := make([]wutil.AddressRewriteRule, 0, len(ips)+1)
 
 	for _, ip := range ips {
 		splits := strings.SplitN(ip, "/", 2)
 
 		if len(splits) == 2 {
-			rules = append(rules, ice.AddressRewriteRule{
+			rules = append(rules, wutil.AddressRewriteRule{
 				External:        []string{splits[0]},
 				Local:           splits[1],
 				AsCandidateType: candidateType,
@@ -1284,7 +1283,7 @@ func legacyNAT1To1AddressRewriteRules(ips []string, candidateType ice.CandidateT
 	}
 
 	if len(catchAll) > 0 {
-		rules = append(rules, ice.AddressRewriteRule{
+		rules = append(rules, wutil.AddressRewriteRule{
 			External:        catchAll,
 			AsCandidateType: candidateType,
 		})
@@ -1305,7 +1304,7 @@ func (g *ICEGatherer) Gather() error {
 	}
 
 	g.setState(ICEGathererStateGathering)
-	if err := agent.OnCandidate(func(candidate ice.Candidate) {
+	if err := agent.OnCandidate(func(candidate wutil.Candidate) {
 		onLocalCandidateHandler := func(*ICECandidate) {}
 		if handler, ok := g.onLocalCandidateHandler.Load().(func(candidate *ICECandidate)); ok && handler != nil {
 			onLocalCandidateHandler = handler
@@ -1336,7 +1335,7 @@ func (g *ICEGatherer) Gather() error {
 
 			c, err := newICECandidateFromICE(candidate, sdpMid, sdpMLineIndex)
 			if err != nil {
-				g.log.Warnf("Failed to convert ice.Candidate: %s", err)
+				g.log.Warnf("Failed to convert wutil.Candidate: %s", err)
 
 				return
 			}
@@ -1393,7 +1392,7 @@ func (g *ICEGatherer) flushCandidates() {
 	for _, candidate := range candidates {
 		c, err := newICECandidateFromICE(candidate, sdpMid, sdpMLineIndex)
 		if err != nil {
-			g.log.Warnf("Failed to convert pooled ice.Candidate: %s", err)
+			g.log.Warnf("Failed to convert pooled wutil.Candidate: %s", err)
 
 			continue
 		}
@@ -1509,7 +1508,7 @@ func (g *ICEGatherer) setState(s ICEGathererState) {
 	}
 }
 
-func (g *ICEGatherer) getAgent() *ice.Agent {
+func (g *ICEGatherer) getAgent() *wutil.Agent {
 	g.lock.RLock()
 	defer g.lock.RUnlock()
 
@@ -1523,7 +1522,7 @@ func (g *ICEGatherer) collectStats(collector *statsReportCollector) {
 	}
 
 	collector.Collecting()
-	go func(collector *statsReportCollector, agent *ice.Agent) {
+	go func(collector *statsReportCollector, agent *wutil.Agent) {
 		for _, candidatePairStats := range agent.GetCandidatePairsStats() {
 			collector.Collecting()
 
@@ -1796,7 +1795,7 @@ type ICETransport struct {
 	onSelectedCandidatePairChangeHandler   atomic.Value
 	state                                  atomic.Value
 	gatherer                               *ICEGatherer
-	conn                                   *ice.Conn
+	conn                                   *wutil.ICEConn
 	mux                                    *Mux
 	ctxCancel                              func()
 	loggerFactory                          wutil.LoggerFactory
@@ -1863,7 +1862,7 @@ func (t *ICETransport) Start(gatherer *ICEGatherer, params ICEParameters, role *
 		return fmt.Errorf("%w: unable to start ICETransport", errICEAgentNotExist)
 	}
 
-	if err := agent.OnConnectionStateChange(func(iceState ice.ConnectionState) {
+	if err := agent.OnConnectionStateChange(func(iceState wutil.ConnectionState) {
 		state := newICETransportStateFromICE(iceState)
 
 		t.setState(state)
@@ -1871,8 +1870,8 @@ func (t *ICETransport) Start(gatherer *ICEGatherer, params ICEParameters, role *
 	}); err != nil {
 		return err
 	}
-	if err := agent.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
-		candidates, err := newICECandidatesFromICE([]ice.Candidate{local, remote}, "", 0)
+	if err := agent.OnSelectedCandidatePairChange(func(local, remote wutil.Candidate) {
+		candidates, err := newICECandidatesFromICE([]wutil.Candidate{local, remote}, "", 0)
 		if err != nil {
 			t.log.Warnf("%w: %s", errICECandiatesCoversionFailed, err)
 
@@ -1894,7 +1893,7 @@ func (t *ICETransport) Start(gatherer *ICEGatherer, params ICEParameters, role *
 
 	t.lock.Unlock()
 
-	var iceConn *ice.Conn
+	var iceConn *wutil.ICEConn
 	var err error
 	switch *role {
 	case ICERoleControlling:
@@ -2053,7 +2052,7 @@ func (t *ICETransport) AddRemoteCandidate(remoteCandidate *ICECandidate) error {
 	defer t.lock.RUnlock()
 
 	var (
-		candidate ice.Candidate
+		candidate wutil.Candidate
 		err       error
 	)
 
@@ -4716,9 +4715,9 @@ func (pc *PeerConnection) AddICECandidate(candidate ICECandidateInit) error {
 		return pc.iceTransport.AddRemoteCandidate(nil)
 	}
 
-	cand, err := ice.UnmarshalCandidate(candidateValue)
+	cand, err := wutil.UnmarshalCandidate(candidateValue)
 	if err != nil {
-		if errors.Is(err, ice.ErrUnknownCandidateTyp) || errors.Is(err, ice.ErrDetermineNetworkType) {
+		if errors.Is(err, wutil.ErrUnknownCandidateTyp) || errors.Is(err, wutil.ErrDetermineNetworkType) {
 			pc.log.Warnf("Discarding remote candidate: %s", err)
 
 			return nil
@@ -7582,7 +7581,7 @@ func addCandidatesToMediaDescriptions(
 	mediaDescr *sdp.MediaDescription,
 	iceGatheringState ICEGatheringState,
 ) error {
-	appendCandidateIfNew := func(c ice.Candidate, attributes []sdp.Attribute) {
+	appendCandidateIfNew := func(c wutil.Candidate, attributes []sdp.Attribute) {
 		marshaled := c.Marshal()
 		for _, a := range attributes {
 			if marshaled == a.Value {
@@ -8193,10 +8192,10 @@ func extractICEDetailsFromMedia(
 			continue
 		}
 
-		cand, err := ice.UnmarshalCandidate(attr.Value)
+		cand, err := wutil.UnmarshalCandidate(attr.Value)
 		if err != nil {
 
-			if errors.Is(err, ice.ErrUnknownCandidateTyp) || errors.Is(err, ice.ErrDetermineNetworkType) {
+			if errors.Is(err, wutil.ErrUnknownCandidateTyp) || errors.Is(err, wutil.ErrDetermineNetworkType) {
 				if log != nil {
 					log.Warnf("Discarding remote candidate: %s", err)
 				}
@@ -8486,8 +8485,8 @@ type SettingEngine struct {
 		RemoteIPFilter           func(net.IP) (keep bool)
 		NAT1To1IPs               []string
 		NAT1To1IPCandidateType   ICECandidateType
-		addressRewriteRules      []ice.AddressRewriteRule
-		MulticastDNSMode         ice.MulticastDNSMode
+		addressRewriteRules      []wutil.AddressRewriteRule
+		MulticastDNSMode         wutil.MulticastDNSMode
 		MulticastDNSHostName     string
 		UsernameFragment         string
 		Password                 string
@@ -8502,18 +8501,18 @@ type SettingEngine struct {
 		insecureSkipHelloVerify       bool
 		disableInsecureSkipVerify     bool
 		retransmissionInterval        time.Duration
-		ellipticCurves                []dtls.Curve
+		ellipticCurves                []wutil.Curve
 		connectContextMaker           func() (context.Context, func())
-		extendedMasterSecret          dtls.ExtendedMasterSecretType
-		clientAuth                    *dtls.ClientAuthType
+		extendedMasterSecret          wutil.ExtendedMasterSecretType
+		clientAuth                    *wutil.ClientAuthType
 		clientCAs                     *x509.CertPool
 		rootCAs                       *x509.CertPool
 		keyLogWriter                  io.Writer
-		cipherSuites                  []dtls.CipherSuiteID
-		customCipherSuites            func() []dtls.CipherSuite
-		clientHelloMessageHook        func(dtls.MessageClientHello) dtls.Message
-		serverHelloMessageHook        func(dtls.MessageServerHello) dtls.Message
-		certificateRequestMessageHook func(dtls.MessageCertificateRequest) dtls.Message
+		cipherSuites                  []wutil.CipherSuiteID
+		customCipherSuites            func() []wutil.CipherSuite
+		clientHelloMessageHook        func(wutil.MessageClientHello) wutil.Message
+		serverHelloMessageHook        func(wutil.MessageServerHello) wutil.Message
+		certificateRequestMessageHook func(wutil.MessageCertificateRequest) wutil.Message
 		supportedProtocols            []string
 	}
 	sctp struct {
@@ -8534,14 +8533,14 @@ type SettingEngine struct {
 	net                                       wutil.TransportNet
 	BufferFactory                             func(packetType wutil.TransportBufferPacketType, ssrc uint32) io.ReadWriteCloser
 	LoggerFactory                             wutil.LoggerFactory
-	iceTCPMux                                 ice.TCPMux
-	iceUDPMux                                 ice.UDPMux
+	iceTCPMux                                 wutil.TCPMux
+	iceUDPMux                                 wutil.UDPMux
 	iceProxyDialer                            proxy.Dialer
 	iceDisableActiveTCP                       bool
-	iceBindingRequestHandler                  func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool
+	iceBindingRequestHandler                  func(m *stun.Message, local, remote wutil.Candidate, pair *wutil.CandidatePair) bool
 	disableMediaEngineCopy                    bool
 	disableMediaEngineMultipleCodecs          bool
-	srtpProtectionProfiles                    []dtls.SRTPProtectionProfile
+	srtpProtectionProfiles                    []wutil.SRTPProtectionProfile
 	receiveMTU                                uint
 	iceMaxBindingRequests                     *uint16
 	fireOnTrackBeforeFirstRTP                 bool
@@ -8553,7 +8552,7 @@ type SettingEngine struct {
 
 type renominationSettings struct {
 	enabled           bool
-	generator         ice.NominationValueGenerator
+	generator         wutil.NominationValueGenerator
 	automatic         bool
 	automaticInterval *time.Duration
 	attributeType     *uint16
@@ -8576,7 +8575,7 @@ func (e *SettingEngine) SetICERenomination(options ...RenominationOption) error 
 	}
 
 	if cfg.generator == nil {
-		cfg.generator = ice.DefaultNominationValueGenerator()
+		cfg.generator = wutil.DefaultNominationValueGenerator()
 	}
 
 	e.renomination.enabled = true
@@ -8612,7 +8611,7 @@ func (e *SettingEngine) EnableDataChannelBlockWrite(nonblockWrite bool) {
 	e.dataChannelBlockWrite = nonblockWrite
 }
 
-func (e *SettingEngine) SetSRTPProtectionProfiles(profiles ...dtls.SRTPProtectionProfile) {
+func (e *SettingEngine) SetSRTPProtectionProfiles(profiles ...wutil.SRTPProtectionProfile) {
 	e.srtpProtectionProfiles = profiles
 }
 
@@ -8644,7 +8643,7 @@ func (e *SettingEngine) SetSTUNGatherTimeout(t time.Duration) {
 
 func (e *SettingEngine) SetEphemeralUDPPortRange(portMin, portMax uint16) error {
 	if portMax < portMin {
-		return ice.ErrPort
+		return wutil.ErrPort
 	}
 
 	e.ephemeralUDP.PortMin = portMin
@@ -8689,7 +8688,7 @@ func (e *SettingEngine) SetICEAddressRewriteRules(rules ...ICEAddressRewriteRule
 		return errAddressRewriteWithNAT1To1
 	}
 
-	converted := make([]ice.AddressRewriteRule, 0, len(rules))
+	converted := make([]wutil.AddressRewriteRule, 0, len(rules))
 	for _, rule := range rules {
 		converted = append(converted, rule.toICE())
 	}
@@ -8717,7 +8716,7 @@ func (e *SettingEngine) SetNet(net wutil.TransportNet) {
 	e.net = net
 }
 
-func (e *SettingEngine) SetICEMulticastDNSMode(multicastDNSMode ice.MulticastDNSMode) {
+func (e *SettingEngine) SetICEMulticastDNSMode(multicastDNSMode wutil.MulticastDNSMode) {
 	e.candidates.MulticastDNSMode = multicastDNSMode
 }
 
@@ -8760,11 +8759,11 @@ func (e *SettingEngine) SetSDPMediaLevelFingerprints(sdpMediaLevelFingerprints b
 	e.sdpMediaLevelFingerprints = sdpMediaLevelFingerprints
 }
 
-func (e *SettingEngine) SetICETCPMux(tcpMux ice.TCPMux) {
+func (e *SettingEngine) SetICETCPMux(tcpMux wutil.TCPMux) {
 	e.iceTCPMux = tcpMux
 }
 
-func (e *SettingEngine) SetICEUDPMux(udpMux ice.UDPMux) {
+func (e *SettingEngine) SetICEUDPMux(udpMux wutil.UDPMux) {
 	e.iceUDPMux = udpMux
 }
 
@@ -8804,7 +8803,7 @@ func (e *SettingEngine) SetDTLSDisableInsecureSkipVerify(disable bool) {
 	e.dtls.disableInsecureSkipVerify = disable
 }
 
-func (e *SettingEngine) SetDTLSEllipticCurves(ellipticCurves ...dtls.Curve) {
+func (e *SettingEngine) SetDTLSEllipticCurves(ellipticCurves ...wutil.Curve) {
 	e.dtls.ellipticCurves = ellipticCurves
 }
 
@@ -8812,11 +8811,11 @@ func (e *SettingEngine) SetDTLSConnectContextMaker(connectContextMaker func() (c
 	e.dtls.connectContextMaker = connectContextMaker
 }
 
-func (e *SettingEngine) SetDTLSExtendedMasterSecret(extendedMasterSecret dtls.ExtendedMasterSecretType) {
+func (e *SettingEngine) SetDTLSExtendedMasterSecret(extendedMasterSecret wutil.ExtendedMasterSecretType) {
 	e.dtls.extendedMasterSecret = extendedMasterSecret
 }
 
-func (e *SettingEngine) SetDTLSClientAuth(clientAuth dtls.ClientAuthType) {
+func (e *SettingEngine) SetDTLSClientAuth(clientAuth wutil.ClientAuthType) {
 	e.dtls.clientAuth = &clientAuth
 }
 
@@ -8848,24 +8847,24 @@ func (e *SettingEngine) SetSCTPMaxMessageSize(maxMessageSize uint32) {
 	e.sctp.maxMessageSize = maxMessageSize
 }
 
-func (e *SettingEngine) SetDTLSCipherSuites(cipherSuites ...dtls.CipherSuiteID) {
+func (e *SettingEngine) SetDTLSCipherSuites(cipherSuites ...wutil.CipherSuiteID) {
 	e.dtls.cipherSuites = cipherSuites
 }
 
-func (e *SettingEngine) SetDTLSCustomerCipherSuites(customCipherSuites func() []dtls.CipherSuite) {
+func (e *SettingEngine) SetDTLSCustomerCipherSuites(customCipherSuites func() []wutil.CipherSuite) {
 	e.dtls.customCipherSuites = customCipherSuites
 }
 
-func (e *SettingEngine) SetDTLSClientHelloMessageHook(hook func(dtls.MessageClientHello) dtls.Message) {
+func (e *SettingEngine) SetDTLSClientHelloMessageHook(hook func(wutil.MessageClientHello) wutil.Message) {
 	e.dtls.clientHelloMessageHook = hook
 }
 
-func (e *SettingEngine) SetDTLSServerHelloMessageHook(hook func(dtls.MessageServerHello) dtls.Message) {
+func (e *SettingEngine) SetDTLSServerHelloMessageHook(hook func(wutil.MessageServerHello) wutil.Message) {
 	e.dtls.serverHelloMessageHook = hook
 }
 
 func (e *SettingEngine) SetDTLSCertificateRequestMessageHook(
-	hook func(dtls.MessageCertificateRequest) dtls.Message,
+	hook func(wutil.MessageCertificateRequest) wutil.Message,
 ) {
 	e.dtls.certificateRequestMessageHook = hook
 }
@@ -8891,7 +8890,7 @@ func (e *SettingEngine) SetSCTPCwndCAStep(cwndCAStep uint32) {
 }
 
 func (e *SettingEngine) SetICEBindingRequestHandler(
-	bindingRequestHandler func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool,
+	bindingRequestHandler func(m *stun.Message, local, remote wutil.Candidate, pair *wutil.CandidatePair) bool,
 ) {
 	e.iceBindingRequestHandler = bindingRequestHandler
 }
@@ -9823,12 +9822,12 @@ func (c Certificate) GetFingerprints() ([]DTLSFingerprint, error) {
 
 	i := 0
 	for _, algo := range fingerprintAlgorithms {
-		name, err := dtls.StringFromHash(algo)
+		name, err := wutil.StringFromHash(algo)
 		if err != nil {
 
 			return nil, fmt.Errorf("%w: %v", ErrFailedToGenerateCertificateFingerprint, err)
 		}
-		value, err := dtls.Fingerprint(c.x509Cert, algo)
+		value, err := wutil.Fingerprint(c.x509Cert, algo)
 		if err != nil {
 
 			return nil, fmt.Errorf("%w: %v", ErrFailedToGenerateCertificateFingerprint, err)
@@ -9929,9 +9928,7 @@ func (c Configuration) getICEServers() []ICEServer {
 
 const (
 	receiveMTU = 1500
-
 	simulcastProbeCount = 10
-
 	simulcastMaxProbeRoutines = 25
 
 	defaultMaxSCTPMessageSize = 1073741823
@@ -9959,11 +9956,11 @@ const (
 	AttributeRtxSequenceNumber = "rtx_sequence_number"
 )
 
-func defaultSrtpProtectionProfiles() []dtls.SRTPProtectionProfile {
-	return []dtls.SRTPProtectionProfile{
-		dtls.SRTP_AEAD_AES_256_GCM,
-		dtls.SRTP_AEAD_AES_128_GCM,
-		dtls.SRTP_AES128_CM_HMAC_SHA1_80,
+func defaultSrtpProtectionProfiles() []wutil.SRTPProtectionProfile {
+	return []wutil.SRTPProtectionProfile{
+		wutil.SRTP_AEAD_AES_256_GCM,
+		wutil.SRTP_AEAD_AES_128_GCM,
+		wutil.SRTP_AES128_CM_HMAC_SHA1_80,
 	}
 }
 
@@ -10304,7 +10301,7 @@ var (
 	errICEConnectionNotStarted        = errors.New("ICE connection not started")
 	errICECandidateTypeUnknown        = errors.New("unknown candidate type")
 	errICEInvalidConvertCandidateType = errors.New(
-		"cannot convert ice.CandidateType into webrtc.ICECandidateType, invalid type",
+		"cannot convert wutil.CandidateType into webrtc.ICECandidateType, invalid type",
 	)
 	errICEAgentNotExist            = errors.New("ICEAgent does not exist")
 	errICECandiatesCoversionFailed = errors.New("unable to convert ICE candidates to ICECandidates")
@@ -10430,7 +10427,7 @@ type ICECandidate struct {
 }
 
 func newICECandidatesFromICE(
-	iceCandidates []ice.Candidate,
+	iceCandidates []wutil.Candidate,
 	sdpMid string,
 	sdpMLineIndex uint16,
 ) ([]ICECandidate, error) {
@@ -10447,7 +10444,7 @@ func newICECandidatesFromICE(
 	return candidates, nil
 }
 
-func newICECandidateFromICE(candidate ice.Candidate, sdpMid string, sdpMLineIndex uint16) (ICECandidate, error) {
+func newICECandidateFromICE(candidate wutil.Candidate, sdpMid string, sdpMLineIndex uint16) (ICECandidate, error) {
 	typ, err := convertTypeFromICE(candidate.Type())
 	if err != nil {
 		return ICECandidate{}, err
@@ -10484,7 +10481,7 @@ func newICECandidateFromICE(candidate ice.Candidate, sdpMid string, sdpMLineInde
 func NewICECandidateFromSDP(sdpString string) (*ICECandidate, error) {
 	value := strings.TrimPrefix(sdpString, "a=")
 	value = strings.TrimPrefix(value, "candidate:")
-	cand, err := ice.UnmarshalCandidate(value)
+	cand, err := wutil.UnmarshalCandidate(value)
 	if err != nil {
 		return nil, err
 	}
@@ -10495,24 +10492,24 @@ func NewICECandidateFromSDP(sdpString string) (*ICECandidate, error) {
 	return &c, nil
 }
 
-func (c ICECandidate) ToICE() (cand ice.Candidate, err error) {
+func (c ICECandidate) ToICE() (cand wutil.Candidate, err error) {
 	candidateID := c.statsID
 	switch c.Typ {
 	case ICECandidateTypeHost:
-		config := ice.CandidateHostConfig{
+		config := wutil.CandidateHostConfig{
 			CandidateID: candidateID,
 			Network:     c.Protocol.String(),
 			Address:     c.Address,
 			Port:        int(c.Port),
 			Component:   c.Component,
-			TCPType:     ice.NewTCPType(c.TCPType),
+			TCPType:     wutil.NewTCPType(c.TCPType),
 			Foundation:  c.Foundation,
 			Priority:    c.Priority,
 		}
 
-		cand, err = ice.NewCandidateHost(&config)
+		cand, err = wutil.NewCandidateHost(&config)
 	case ICECandidateTypeSrflx:
-		config := ice.CandidateServerReflexiveConfig{
+		config := wutil.CandidateServerReflexiveConfig{
 			CandidateID: candidateID,
 			Network:     c.Protocol.String(),
 			Address:     c.Address,
@@ -10524,9 +10521,9 @@ func (c ICECandidate) ToICE() (cand ice.Candidate, err error) {
 			RelPort:     int(c.RelatedPort),
 		}
 
-		cand, err = ice.NewCandidateServerReflexive(&config)
+		cand, err = wutil.NewCandidateServerReflexive(&config)
 	case ICECandidateTypePrflx:
-		config := ice.CandidatePeerReflexiveConfig{
+		config := wutil.CandidatePeerReflexiveConfig{
 			CandidateID: candidateID,
 			Network:     c.Protocol.String(),
 			Address:     c.Address,
@@ -10538,9 +10535,9 @@ func (c ICECandidate) ToICE() (cand ice.Candidate, err error) {
 			RelPort:     int(c.RelatedPort),
 		}
 
-		cand, err = ice.NewCandidatePeerReflexive(&config)
+		cand, err = wutil.NewCandidatePeerReflexive(&config)
 	case ICECandidateTypeRelay:
-		config := ice.CandidateRelayConfig{
+		config := wutil.CandidateRelayConfig{
 			CandidateID: candidateID,
 			Network:     c.Protocol.String(),
 			Address:     c.Address,
@@ -10552,7 +10549,7 @@ func (c ICECandidate) ToICE() (cand ice.Candidate, err error) {
 			RelPort:     int(c.RelatedPort),
 		}
 
-		cand, err = ice.NewCandidateRelay(&config)
+		cand, err = wutil.NewCandidateRelay(&config)
 	default:
 		return nil, fmt.Errorf("%w: %s", errICECandidateTypeUnknown, c.Typ)
 	}
@@ -10564,7 +10561,7 @@ func (c ICECandidate) ToICE() (cand ice.Candidate, err error) {
 	return cand, err
 }
 
-func (c *ICECandidate) setExtensions(ext []ice.CandidateExtension) {
+func (c *ICECandidate) setExtensions(ext []wutil.CandidateExtension) {
 	var extensions strings.Builder
 
 	for i := range ext {
@@ -10578,9 +10575,9 @@ func (c *ICECandidate) setExtensions(ext []ice.CandidateExtension) {
 	c.extensions = extensions.String()
 }
 
-func (c *ICECandidate) exportExtensions(cand ice.Candidate) error {
+func (c *ICECandidate) exportExtensions(cand wutil.Candidate) error {
 	extensions := c.extensions
-	var ext ice.CandidateExtension
+	var ext wutil.CandidateExtension
 	var field string
 
 	for i, start := 0, 0; i < len(extensions); i++ {
@@ -10606,22 +10603,22 @@ func (c *ICECandidate) exportExtensions(cand ice.Candidate) error {
 				return err
 			}
 
-			ext = ice.CandidateExtension{}
+			ext = wutil.CandidateExtension{}
 		}
 	}
 
 	return nil
 }
 
-func convertTypeFromICE(t ice.CandidateType) (ICECandidateType, error) {
+func convertTypeFromICE(t wutil.CandidateType) (ICECandidateType, error) {
 	switch t {
-	case ice.CandidateTypeHost:
+	case wutil.CandidateTypeHost:
 		return ICECandidateTypeHost, nil
-	case ice.CandidateTypeServerReflexive:
+	case wutil.CandidateTypeServerReflexive:
 		return ICECandidateTypeSrflx, nil
-	case ice.CandidateTypePeerReflexive:
+	case wutil.CandidateTypePeerReflexive:
 		return ICECandidateTypePrflx, nil
-	case ice.CandidateTypeRelay:
+	case wutil.CandidateTypeRelay:
 		return ICECandidateTypeRelay, nil
 	default:
 		return ICECandidateType(t), fmt.Errorf("%w: %s", errICECandidateTypeUnknown, t)
@@ -10738,15 +10735,15 @@ func (t ICECandidateType) String() string {
 	}
 }
 
-func getCandidateType(candidateType ice.CandidateType) (ICECandidateType, error) {
+func getCandidateType(candidateType wutil.CandidateType) (ICECandidateType, error) {
 	switch candidateType {
-	case ice.CandidateTypeHost:
+	case wutil.CandidateTypeHost:
 		return ICECandidateTypeHost, nil
-	case ice.CandidateTypeServerReflexive:
+	case wutil.CandidateTypeServerReflexive:
 		return ICECandidateTypeSrflx, nil
-	case ice.CandidateTypePeerReflexive:
+	case wutil.CandidateTypePeerReflexive:
 		return ICECandidateTypePrflx, nil
-	case ice.CandidateTypeRelay:
+	case wutil.CandidateTypeRelay:
 		return ICECandidateTypeRelay, nil
 	default:
 
@@ -10767,9 +10764,9 @@ func (t *ICECandidateType) UnmarshalText(b []byte) error {
 	return err
 }
 
-func (r ICECandidateType) toICE() ice.CandidateType {
+func (r ICECandidateType) toICE() wutil.CandidateType {
 
-	return ice.CandidateType(r)
+	return wutil.CandidateType(r)
 }
 
 type ICEConnectionState int
@@ -11170,21 +11167,21 @@ func (c ICETransportState) String() string {
 	}
 }
 
-func newICETransportStateFromICE(i ice.ConnectionState) ICETransportState {
+func newICETransportStateFromICE(i wutil.ConnectionState) ICETransportState {
 	switch i {
-	case ice.ConnectionStateNew:
+	case wutil.ConnectionStateNew:
 		return ICETransportStateNew
-	case ice.ConnectionStateChecking:
+	case wutil.ConnectionStateChecking:
 		return ICETransportStateChecking
-	case ice.ConnectionStateConnected:
+	case wutil.ConnectionStateConnected:
 		return ICETransportStateConnected
-	case ice.ConnectionStateCompleted:
+	case wutil.ConnectionStateCompleted:
 		return ICETransportStateCompleted
-	case ice.ConnectionStateFailed:
+	case wutil.ConnectionStateFailed:
 		return ICETransportStateFailed
-	case ice.ConnectionStateDisconnected:
+	case wutil.ConnectionStateDisconnected:
 		return ICETransportStateDisconnected
-	case ice.ConnectionStateClosed:
+	case wutil.ConnectionStateClosed:
 		return ICETransportStateClosed
 	default:
 		return ICETransportStateUnknown
@@ -11269,27 +11266,27 @@ func (t NetworkType) Protocol() string {
 	}
 }
 
-func getNetworkType(iceNetworkType ice.NetworkType) (NetworkType, error) {
+func getNetworkType(iceNetworkType wutil.NetworkType) (NetworkType, error) {
 	switch iceNetworkType {
-	case ice.NetworkTypeUDP4:
+	case wutil.NetworkTypeUDP4:
 		return NetworkTypeUDP4, nil
-	case ice.NetworkTypeUDP6:
+	case wutil.NetworkTypeUDP6:
 		return NetworkTypeUDP6, nil
-	case ice.NetworkTypeTCP4:
+	case wutil.NetworkTypeTCP4:
 		return NetworkTypeTCP4, nil
-	case ice.NetworkTypeTCP6:
+	case wutil.NetworkTypeTCP6:
 		return NetworkTypeTCP6, nil
 	default:
 		return NetworkTypeUnknown, fmt.Errorf("%w: %s", errNetworkTypeUnknown, iceNetworkType.String())
 	}
 }
 
-func toICENetworkTypes(networkTypes []NetworkType) []ice.NetworkType {
+func toICENetworkTypes(networkTypes []NetworkType) []wutil.NetworkType {
 	if len(networkTypes) == 0 {
 		return nil
 	}
 
-	converted := make([]ice.NetworkType, 0, len(networkTypes))
+	converted := make([]wutil.NetworkType, 0, len(networkTypes))
 	for _, networkType := range networkTypes {
 		converted = append(converted, networkType.toICE())
 	}
@@ -11297,8 +11294,8 @@ func toICENetworkTypes(networkTypes []NetworkType) []ice.NetworkType {
 	return converted
 }
 
-func (networkType NetworkType) toICE() ice.NetworkType {
-	return ice.NetworkType(networkType)
+func (networkType NetworkType) toICE() wutil.NetworkType {
+	return wutil.NetworkType(networkType)
 }
 
 type OAuthCredential struct {
@@ -12782,15 +12779,15 @@ func (s TransportStats) statsMarker() {}
 
 type StatsICECandidatePairState string
 
-func toStatsICECandidatePairState(state ice.CandidatePairState) (StatsICECandidatePairState, error) {
+func toStatsICECandidatePairState(state wutil.CandidatePairState) (StatsICECandidatePairState, error) {
 	switch state {
-	case ice.CandidatePairStateWaiting:
+	case wutil.CandidatePairStateWaiting:
 		return StatsICECandidatePairStateWaiting, nil
-	case ice.CandidatePairStateInProgress:
+	case wutil.CandidatePairStateInProgress:
 		return StatsICECandidatePairStateInProgress, nil
-	case ice.CandidatePairStateFailed:
+	case wutil.CandidatePairStateFailed:
 		return StatsICECandidatePairStateFailed, nil
-	case ice.CandidatePairStateSucceeded:
+	case wutil.CandidatePairStateSucceeded:
 		return StatsICECandidatePairStateSucceeded, nil
 	default:
 
@@ -12800,7 +12797,7 @@ func toStatsICECandidatePairState(state ice.CandidatePairState) (StatsICECandida
 	}
 }
 
-func toICECandidatePairStats(candidatePairStats ice.CandidatePairStats) (ICECandidatePairStats, error) {
+func toICECandidatePairStats(candidatePairStats wutil.CandidatePairStats) (ICECandidatePairStats, error) {
 	state, err := toStatsICECandidatePairState(candidatePairStats.State)
 	if err != nil {
 		return ICECandidatePairStats{}, err
@@ -13049,9 +13046,9 @@ func (e *Endpoint) ReadFrom(p []byte) (int, net.Addr, error) {
 
 func (e *Endpoint) Write(p []byte) (int, error) {
 	n, err := e.mux.nextConn.Write(p)
-	if errors.Is(err, ice.ErrNoCandidatePairs) {
+	if errors.Is(err, wutil.ErrNoCandidatePairs) {
 		return 0, nil
-	} else if errors.Is(err, ice.ErrClosed) {
+	} else if errors.Is(err, wutil.ErrClosed) {
 		return 0, io.ErrClosedPipe
 	}
 
@@ -13179,7 +13176,7 @@ func (m *Mux) readLoop() {
 	for {
 		n, err := m.nextConn.Read(buf)
 		switch {
-		case errors.Is(err, io.EOF), errors.Is(err, ice.ErrClosed):
+		case errors.Is(err, io.EOF), errors.Is(err, wutil.ErrClosed):
 			return
 		case errors.Is(err, io.ErrShortBuffer), errors.Is(err, wutil.TransportErrTimeout):
 			m.log.Errorf("mux: failed to read from packetio.Buffer %s", err.Error())

@@ -3,7 +3,7 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package ice
+package webrtc
 
 import (
 	"context"
@@ -24,10 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/amarnathcjd/gortc/webrtc"
-
 	"github.com/amarnathcjd/gortc/webrtc/stun"
-	stunx "github.com/amarnathcjd/gortc/webrtc/ice/internal/stun"
 
 	"github.com/google/uuid"
 	"golang.org/x/net/dns/dnsmessage"
@@ -174,7 +171,7 @@ type bindingRequest struct {
 }
 
 type Agent struct {
-	loop                              *webrtc.TaskloopLoop
+	loop                              *TaskloopLoop
 	constructed                       bool
 	onConnectionStateChangeHdlr       atomic.Value
 	onSelectedCandidatePairChangeHdlr atomic.Value
@@ -224,7 +221,7 @@ type Agent struct {
 	networkTypes                      []NetworkType
 	turnTransportProtocols            []NetworkType
 	addressRewriteRules               []AddressRewriteRule
-	buf                               *webrtc.TransportBuffer
+	buf                               *TransportBuffer
 	pendingBindingRequests            []bindingRequest
 	addressRewriteMapper              *addressRewriteMapper
 	userBindingRequestHandler         func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
@@ -233,9 +230,9 @@ type Agent struct {
 	connectionStateNotifier           *handlerNotifier
 	candidateNotifier                 *handlerNotifier
 	selectedCandidatePairNotifier     *handlerNotifier
-	loggerFactory                     webrtc.LoggerFactory
-	log                               webrtc.LeveledLogger
-	net                               webrtc.TransportNet
+	loggerFactory                     LoggerFactory
+	log                               LeveledLogger
+	net                               TransportNet
 	tcpMux                            TCPMux
 	udpMux                            UDPMux
 	interfaceFilter                   func(string) (keep bool)
@@ -411,7 +408,7 @@ func createAgentBase(config *AgentConfig) (*Agent, error) {
 
 	loggerFactory := config.LoggerFactory
 	if loggerFactory == nil {
-		loggerFactory = webrtc.NewDefaultLoggerFactory()
+		loggerFactory = NewDefaultLoggerFactory()
 	}
 	log := loggerFactory.NewLogger("ice")
 
@@ -429,7 +426,7 @@ func createAgentBase(config *AgentConfig) (*Agent, error) {
 		networkTypes:                    normalizedNetworkTypes,
 		turnTransportProtocols:          normalizedTURNTransportProtocols,
 		onConnected:                     make(chan struct{}),
-		buf:                             webrtc.TransportNewBuffer(),
+		buf:                             TransportNewBuffer(),
 		startedCh:                       startedCtx.Done(),
 		startedFn:                       startedFn,
 		portMin:                         config.PortMin,
@@ -511,7 +508,7 @@ func newAgentWithConfig(agent *Agent, opts ...AgentOption) (*Agent, error) {
 	}
 
 	if agent.net == nil {
-		agent.net, err = webrtc.TransportNewNet()
+		agent.net, err = TransportNewNet()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create network: %w", err)
 		}
@@ -566,7 +563,7 @@ func newAgentWithConfig(agent *Agent, opts ...AgentOption) (*Agent, error) {
 		return nil, err
 	}
 
-	agent.loop = webrtc.TaskloopNew(func() {
+	agent.loop = TaskloopNew(func() {
 		agent.gatherCandidateCancel()
 		if agent.gatherCandidateDone != nil {
 			<-agent.gatherCandidateDone
@@ -1608,7 +1605,7 @@ func (a *Agent) handleInboundRequest(
 		msg.Contains(stun.AttrUseCandidate),
 	)
 
-	if err := stunx.AssertUsername(msg, a.localUfrag+":"+a.remoteUfrag); err != nil {
+	if err := AssertUsername(msg, a.localUfrag+":"+a.remoteUfrag); err != nil {
 		a.log.Warnf("Discard request with wrong username from (%s), %v", remote, err)
 
 		return nil, false
@@ -2091,7 +2088,7 @@ type AgentConfig struct {
 	NetworkTypes                    []NetworkType
 	turnTransportProtocols          []NetworkType
 	CandidateTypes                  []CandidateType
-	LoggerFactory                   webrtc.LoggerFactory
+	LoggerFactory                   LoggerFactory
 	MaxBindingRequests              *uint16
 	Lite                            bool
 	NAT1To1IPCandidateType          CandidateType
@@ -2101,7 +2098,7 @@ type AgentConfig struct {
 	PrflxAcceptanceMinWait          *time.Duration
 	RelayAcceptanceMinWait          *time.Duration
 	STUNGatherTimeout               *time.Duration
-	Net                             webrtc.TransportNet
+	Net                             TransportNet
 	InterfaceFilter                 func(string) (keep bool)
 	IPFilter                        func(net.IP) (keep bool)
 	RemoteIPFilter                  func(net.IP) (keep bool)
@@ -2823,7 +2820,7 @@ func WithRemoteIPFilter(filter func(net.IP) bool) AgentOption {
 	}
 }
 
-func WithNet(net webrtc.TransportNet) AgentOption {
+func WithNet(net TransportNet) AgentOption {
 	return func(a *Agent) error {
 		if a.constructed {
 			return ErrAgentOptionNotUpdatable
@@ -3080,7 +3077,7 @@ func WithInterfaceFilter(filter func(string) bool) AgentOption {
 	}
 }
 
-func WithLoggerFactory(loggerFactory webrtc.LoggerFactory) AgentOption {
+func WithICELoggerFactory(loggerFactory LoggerFactory) AgentOption {
 	return func(a *Agent) error {
 		if a.constructed {
 			return ErrAgentOptionNotUpdatable
@@ -4922,7 +4919,7 @@ var (
 	ErrLocalUfragInsufficientBits             = errors.New("local username fragment is less than 24 bits long")
 	ErrLocalPwdInsufficientBits               = errors.New("local password is less than 128 bits long")
 	ErrProtoType                              = errors.New("invalid transport protocol type")
-	ErrClosed                                 = webrtc.TaskloopErrClosed
+	ErrClosed                                 = TaskloopErrClosed
 	ErrNoCandidatePairs                       = errors.New("no candidate pairs available")
 	ErrCanceledByCaller                       = errors.New("connecting canceled by caller")
 	ErrMultipleStart                          = errors.New("attempted to start agent twice")
@@ -5058,7 +5055,7 @@ func urlSupportsSrflxGathering(url stun.URI) bool {
 	return url.Scheme == stun.SchemeTypeSTUN || url.Scheme == stun.SchemeTypeTURN
 }
 
-func closeConnAndLog(c io.Closer, log webrtc.LeveledLogger, msg string, args ...any) {
+func closeConnAndLog(c io.Closer, log LeveledLogger, msg string, args ...any) {
 	if c == nil || (reflect.ValueOf(c).Kind() == reflect.Ptr && reflect.ValueOf(c).IsNil()) {
 		log.Warnf("Connection is not allocated: "+msg, args...)
 
@@ -5175,7 +5172,7 @@ func appendHostMappedAddrs(
 	mappedAddrs []netip.Addr,
 	mappedIPs []net.IP,
 	addr netip.Addr,
-	log webrtc.LeveledLogger,
+	log LeveledLogger,
 ) []netip.Addr {
 	for _, mappedIP := range mappedIPs {
 		conv, ok := netip.AddrFromSlice(mappedIP)
@@ -5697,7 +5694,7 @@ func (a *Agent) gatherCandidatesSrflx(ctx context.Context, urls []*stun.URI, net
 			}
 		}()
 
-		xorAddr, err := stunx.GetXORMappedAddr(conn, serverAddr, a.stunGatherTimeout)
+		xorAddr, err := GetXORMappedAddr(conn, serverAddr, a.stunGatherTimeout)
 		if err != nil {
 			closeConnAndLog(conn, a.log, "failed to get server reflexive address %s %s: %v", network, url, err)
 
@@ -5852,7 +5849,7 @@ func (a *Agent) startNetworkMonitoring(ctx context.Context) {
 
 func (a *Agent) detectNetworkChanges() bool {
 
-	if stdNet, ok := a.net.(*webrtc.TransportStdNet); ok {
+	if stdNet, ok := a.net.(*TransportStdNet); ok {
 		if err := stdNet.UpdateInterfaces(); err != nil {
 			a.log.Warnf("Failed to update interfaces: %v", err)
 		}
@@ -6074,13 +6071,13 @@ func generateMulticastDNSName() (string, error) {
 }
 
 func createMulticastDNS(
-	_ webrtc.TransportNet, _ []NetworkType,
-	_ []*webrtc.TransportInterface, _ bool,
+	_ TransportNet, _ []NetworkType,
+	_ []*TransportInterface, _ bool,
 	_ net.IP,
 	mDNSMode MulticastDNSMode,
 	_ string,
-	_ webrtc.LeveledLogger,
-	_ webrtc.LoggerFactory,
+	_ LeveledLogger,
+	_ LoggerFactory,
 ) (*mdnsConn, MulticastDNSMode, error) {
 	return nil, mDNSMode, nil
 }
@@ -6112,18 +6109,18 @@ func isZeros(ip net.IP) bool {
 }
 
 func localInterfaces(
-	n webrtc.TransportNet, interfaceFilter func(string) (keep bool),
+	n TransportNet, interfaceFilter func(string) (keep bool),
 	ipFilter func(net.IP) (keep bool),
 	networkTypes []NetworkType,
 	includeLoopback bool,
-) ([]*webrtc.TransportInterface, []ifaceAddr, error) {
+) ([]*TransportInterface, []ifaceAddr, error) {
 	ipAddrs := []ifaceAddr{}
 	ifaces, err := n.Interfaces()
 	if err != nil {
 		return nil, ipAddrs, err
 	}
 
-	filteredIfaces := make([]*webrtc.TransportInterface, 0, len(ifaces))
+	filteredIfaces := make([]*TransportInterface, 0, len(ifaces))
 
 	var ipV4Requested, ipv6Requested bool
 	if len(networkTypes) == 0 {
@@ -6192,11 +6189,11 @@ func localInterfaces(
 }
 
 func listenUDPInPortRange(
-	netTransport webrtc.TransportNet, log webrtc.LeveledLogger,
+	netTransport TransportNet, log LeveledLogger,
 	portMax, portMin int,
 	network string,
 	lAddr *net.UDPAddr,
-) (webrtc.TransportUDPConn, error) {
+) (TransportUDPConn, error) {
 	if (lAddr.Port != 0) || ((portMin == 0) && (portMax == 0)) {
 		return netTransport.ListenUDP(network, lAddr)
 	}
@@ -6227,7 +6224,7 @@ func listenUDPInPortRange(
 			return c, e
 		}
 		log.Debugf("Failed to listen %s: %v", lAddr.String(), e)
-		if webrtc.IsAddrUnavailable(e) {
+		if IsAddrUnavailable(e) {
 			return nil, e
 		}
 		portCurrent++
@@ -6387,7 +6384,6 @@ func (p *PriorityAttr) GetFrom(m *stun.Message) error {
 }
 
 const (
-	runesAlpha                 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	runesDigit                 = "0123456789"
 	runesCandidateIDFoundation = runesAlpha + runesDigit + "+/"
 
@@ -6396,12 +6392,12 @@ const (
 )
 
 var (
-	globalMathRandomGenerator  = webrtc.NewRandGenerator()
+	globalMathRandomGenerator  = NewRandGenerator()
 	globalCandidateIDGenerator = candidateIDGenerator{globalMathRandomGenerator}
 )
 
 type candidateIDGenerator struct {
-	webrtc.RandGenerator
+	RandGenerator
 }
 
 func (g *candidateIDGenerator) Generate() string {
@@ -6410,11 +6406,11 @@ func (g *candidateIDGenerator) Generate() string {
 }
 
 func generatePwd() (string, error) {
-	return webrtc.CryptoRandString(lenPwd, runesAlpha)
+	return CryptoRandString(lenPwd, runesAlpha)
 }
 
 func generateUFrag() (string, error) {
-	return webrtc.CryptoRandString(lenUFrag, runesAlpha)
+	return CryptoRandString(lenUFrag, runesAlpha)
 }
 
 const (
@@ -6509,7 +6505,7 @@ type controllingSelector struct {
 	startTime     time.Time
 	agent         *Agent
 	nominatedPair *CandidatePair
-	log           webrtc.LeveledLogger
+	log           LeveledLogger
 }
 
 func (s *controllingSelector) Start() {
@@ -6743,7 +6739,7 @@ func (s *controllingSelector) checkForAutomaticRenomination() {
 
 type controlledSelector struct {
 	agent          *Agent
-	log            webrtc.LeveledLogger
+	log            LeveledLogger
 	lastNomination *uint32
 }
 
@@ -7046,7 +7042,7 @@ func (a *Agent) AwaitConnect(ctx context.Context) error {
 	return nil
 }
 
-func (a *Agent) StartDial(remoteUfrag, remotePwd string) (*Conn, error) {
+func (a *Agent) StartDial(remoteUfrag, remotePwd string) (*ICEConn, error) {
 	conn, err := a.startConnect(true, remoteUfrag, remotePwd)
 	if err != nil {
 		return nil, err
@@ -7055,7 +7051,7 @@ func (a *Agent) StartDial(remoteUfrag, remotePwd string) (*Conn, error) {
 	return conn, nil
 }
 
-func (a *Agent) Dial(ctx context.Context, remoteUfrag, remotePwd string) (*Conn, error) {
+func (a *Agent) Dial(ctx context.Context, remoteUfrag, remotePwd string) (*ICEConn, error) {
 	conn, err := a.StartDial(remoteUfrag, remotePwd)
 	if err != nil {
 		return nil, err
@@ -7068,7 +7064,7 @@ func (a *Agent) Dial(ctx context.Context, remoteUfrag, remotePwd string) (*Conn,
 	return conn, nil
 }
 
-func (a *Agent) StartAccept(remoteUfrag, remotePwd string) (*Conn, error) {
+func (a *Agent) StartAccept(remoteUfrag, remotePwd string) (*ICEConn, error) {
 	conn, err := a.startConnect(false, remoteUfrag, remotePwd)
 	if err != nil {
 		return nil, err
@@ -7077,7 +7073,7 @@ func (a *Agent) StartAccept(remoteUfrag, remotePwd string) (*Conn, error) {
 	return conn, nil
 }
 
-func (a *Agent) Accept(ctx context.Context, remoteUfrag, remotePwd string) (*Conn, error) {
+func (a *Agent) Accept(ctx context.Context, remoteUfrag, remotePwd string) (*ICEConn, error) {
 	conn, err := a.StartAccept(remoteUfrag, remotePwd)
 	if err != nil {
 		return nil, err
@@ -7090,21 +7086,21 @@ func (a *Agent) Accept(ctx context.Context, remoteUfrag, remotePwd string) (*Con
 	return conn, nil
 }
 
-type Conn struct {
+type ICEConn struct {
 	bytesReceived atomic.Uint64
 	bytesSent     atomic.Uint64
 	agent         *Agent
 }
 
-func (c *Conn) BytesSent() uint64 {
+func (c *ICEConn) BytesSent() uint64 {
 	return c.bytesSent.Load()
 }
 
-func (c *Conn) BytesReceived() uint64 {
+func (c *ICEConn) BytesReceived() uint64 {
 	return c.bytesReceived.Load()
 }
 
-func (a *Agent) startConnect(isControlling bool, remoteUfrag, remotePwd string) (*Conn, error) {
+func (a *Agent) startConnect(isControlling bool, remoteUfrag, remotePwd string) (*ICEConn, error) {
 	err := a.loop.Err()
 	if err != nil {
 		return nil, err
@@ -7114,12 +7110,12 @@ func (a *Agent) startConnect(isControlling bool, remoteUfrag, remotePwd string) 
 		return nil, err
 	}
 
-	return &Conn{
+	return &ICEConn{
 		agent: a,
 	}, nil
 }
 
-func (c *Conn) Read(p []byte) (int, error) {
+func (c *ICEConn) Read(p []byte) (int, error) {
 	err := c.agent.loop.Err()
 	if err != nil {
 		return 0, err
@@ -7131,7 +7127,7 @@ func (c *Conn) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (c *Conn) Write(packet []byte) (int, error) {
+func (c *ICEConn) Write(packet []byte) (int, error) {
 	err := c.agent.loop.Err()
 	if err != nil {
 		return 0, err
@@ -7163,7 +7159,7 @@ func (c *Conn) Write(packet []byte) (int, error) {
 	return n, err
 }
 
-func (c *Conn) GetCandidatePairsInfo() []CandidatePairInfo {
+func (c *ICEConn) GetCandidatePairsInfo() []CandidatePairInfo {
 	var pairs []CandidatePairInfo
 
 	err := c.agent.loop.Run(c.agent.loop, func(_ context.Context) {
@@ -7187,7 +7183,7 @@ func (c *Conn) GetCandidatePairsInfo() []CandidatePairInfo {
 	return pairs
 }
 
-func (c *Conn) WriteToPair(pairID uint64, packet []byte) (int, error) {
+func (c *ICEConn) WriteToPair(pairID uint64, packet []byte) (int, error) {
 	if err := c.agent.loop.Err(); err != nil {
 		return 0, err
 	}
@@ -7225,11 +7221,11 @@ func (c *Conn) WriteToPair(pairID uint64, packet []byte) (int, error) {
 	return n, err
 }
 
-func (c *Conn) Close() error {
+func (c *ICEConn) Close() error {
 	return c.agent.Close()
 }
 
-func (c *Conn) LocalAddr() net.Addr {
+func (c *ICEConn) LocalAddr() net.Addr {
 	pair := c.agent.getSelectedPair()
 	if pair == nil {
 		return nil
@@ -7238,7 +7234,7 @@ func (c *Conn) LocalAddr() net.Addr {
 	return pair.Local.addr()
 }
 
-func (c *Conn) RemoteAddr() net.Addr {
+func (c *ICEConn) RemoteAddr() net.Addr {
 	pair := c.agent.getSelectedPair()
 	if pair == nil {
 		return nil
@@ -7247,7 +7243,7 @@ func (c *Conn) RemoteAddr() net.Addr {
 	return pair.Remote.addr()
 }
 
-func (c *Conn) SetDeadline(t time.Time) error {
+func (c *ICEConn) SetDeadline(t time.Time) error {
 	if err := c.SetReadDeadline(t); err != nil {
 		return err
 	}
@@ -7255,11 +7251,11 @@ func (c *Conn) SetDeadline(t time.Time) error {
 	return c.SetWriteDeadline(t)
 }
 
-func (c *Conn) SetReadDeadline(t time.Time) error {
+func (c *ICEConn) SetReadDeadline(t time.Time) error {
 	return c.agent.buf.SetReadDeadline(t)
 }
 
-func (c *Conn) SetWriteDeadline(t time.Time) error {
+func (c *ICEConn) SetWriteDeadline(t time.Time) error {
 	pair := c.agent.getSelectedPair()
 	if pair == nil || pair.Local == nil {
 		return nil
@@ -7329,4 +7325,60 @@ func (UseCandidateAttr) IsSet(m *stun.Message) bool {
 
 func UseCandidate() UseCandidateAttr {
 	return UseCandidateAttr{}
+}
+
+// ===== internal STUN helpers (formerly webrtc/ice/internal/stun) =====
+
+var (
+	errGetXorMappedAddrResponse = errors.New("failed to get XOR-MAPPED-ADDRESS response")
+	errMismatchUsername         = errors.New("username mismatch")
+)
+
+func GetXORMappedAddr(conn net.PacketConn, serverAddr net.Addr, timeout time.Duration) (*stun.XORMappedAddress, error) {
+	if timeout > 0 {
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, err
+		}
+
+		defer conn.SetReadDeadline(time.Time{})
+	}
+
+	req, err := stun.Build(stun.BindingRequest, stun.TransactionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = conn.WriteTo(req.Raw, serverAddr); err != nil {
+		return nil, err
+	}
+
+	const maxMessageSize = 1280
+	buf := make([]byte, maxMessageSize)
+	n, _, err := conn.ReadFrom(buf)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &stun.Message{Raw: buf[:n]}
+	if err = res.Decode(); err != nil {
+		return nil, err
+	}
+
+	var addr stun.XORMappedAddress
+	if err = addr.GetFrom(res); err != nil {
+		return nil, fmt.Errorf("%w: %v", errGetXorMappedAddrResponse, err)
+	}
+
+	return &addr, nil
+}
+
+func AssertUsername(m *stun.Message, expectedUsername string) error {
+	var username stun.Username
+	if err := username.GetFrom(m); err != nil {
+		return err
+	} else if string(username) != expectedUsername {
+		return fmt.Errorf("%w expected(%x) actual(%x)", errMismatchUsername, expectedUsername, string(username))
+	}
+
+	return nil
 }
