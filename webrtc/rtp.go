@@ -3,7 +3,7 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package rtp
+package webrtc
 
 import (
 	"encoding/binary"
@@ -11,68 +11,63 @@ import (
 	"fmt"
 	"io"
 	"sync/atomic"
-
-	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 var (
-	errHeaderSizeInsufficient             = errors.New("RTP header size insufficient")
-	errHeaderSizeInsufficientForExtension = errors.New("RTP header size insufficient for extension")
-	errTooSmall                           = errors.New("buffer too small")
-	errInvalidRTPPadding                  = errors.New("invalid RTP padding")
+	rtpErrHeaderSizeInsufficient             = errors.New("RTP header size insufficient")
+	rtpErrHeaderSizeInsufficientForExtension = errors.New("RTP header size insufficient for extension")
+	rtpErrTooSmall                           = errors.New("buffer too small")
+	rtpErrInvalidRTPPadding                  = errors.New("invalid RTP padding")
 )
 
-var globalMathRandomGenerator = webrtc.NewRandGenerator()
+var rtpGlobalMathRandomGenerator = NewRandGenerator()
 
 const (
-	ExtensionProfileOneByte = 0xBEDE
-
-	ExtensionProfileTwoByte = 0x1000
-
-	CryptexProfileOneByte = 0xC0DE
-
-	CryptexProfileTwoByte = 0xC2DE
+	RtpExtensionProfileOneByte = 0xBEDE
+	RtpExtensionProfileTwoByte = 0x1000
+	RtpCryptexProfileOneByte = 0xC0DE
+	RtpCryptexProfileTwoByte = 0xC2DE
 )
 
 const (
-	headerLength        = 4
-	versionShift        = 6
-	versionMask         = 0x3
-	paddingShift        = 5
-	paddingMask         = 0x1
-	extensionShift      = 4
-	extensionMask       = 0x1
-	extensionIDReserved = 0xF
-	extensionIDPadding  = 0x0
-	ccMask              = 0xF
-	markerShift         = 7
-	markerMask          = 0x1
-	ptMask              = 0x7F
-	seqNumOffset        = 2
-	seqNumLength        = 2
-	timestampOffset     = 4
-	timestampLength     = 4
-	ssrcOffset          = 8
-	ssrcLength          = 4
-	csrcOffset          = 12
-	csrcLength          = 4
+	rtpHeaderLength        = 4
+	rtpVersionShift        = 6
+	rtpVersionMask         = 0x3
+	rtpPaddingShift        = 5
+	rtpPaddingMask         = 0x1
+	rtpExtensionShift      = 4
+	rtpExtensionMask       = 0x1
+	rtpExtensionIDReserved = 0xF
+	rtpExtensionIDPadding  = 0x0
+	rtpCcMask              = 0xF
+	rtpMarkerShift         = 7
+	rtpMarkerMask          = 0x1
+	rtpPtMask              = 0x7F
+	rtpSeqNumOffset        = 2
+	rtpSeqNumLength        = 2
+	rtpTimestampOffset     = 4
+	rtpTimestampLength     = 4
+	rtpSsrcOffset          = 8
+	rtpSsrcLength          = 4
+	rtpCsrcOffset          = 12
+	rtpCsrcLength          = 4
 )
 
-type Extension struct {
+type RtpExtension struct {
 	id      uint8
 	payload []byte
 }
 
-func headerExtensionCheck(profile uint16, id uint8, payload []byte) error {
+func rtpHeaderExtensionCheck(profile uint16, id uint8, payload []byte) error {
 	switch profile {
-	case ExtensionProfileOneByte:
+	case RtpExtensionProfileOneByte:
 		if id < 1 || id > 14 {
 			return fmt.Errorf("header extension id must be between 1 and 14 for RFC 5285 one byte extensions: %d", id)
 		}
 		if len(payload) > 16 {
 			return fmt.Errorf("header extension payload must be 16bytes or less for RFC 5285 one byte extensions: %d", len(payload))
 		}
-	case ExtensionProfileTwoByte:
+	case RtpExtensionProfileTwoByte:
 		if id < 1 {
 			return fmt.Errorf("header extension id must be between 1 and 255 for RFC 5285 two byte extensions: %d", id)
 		}
@@ -86,7 +81,7 @@ func headerExtensionCheck(profile uint16, id uint8, payload []byte) error {
 	return nil
 }
 
-type Header struct {
+type RtpHeader struct {
 	Version          uint8
 	Padding          bool
 	Extension        bool
@@ -97,47 +92,47 @@ type Header struct {
 	SSRC             uint32
 	CSRC             []uint32
 	ExtensionProfile uint16
-	Extensions       []Extension
+	Extensions       []RtpExtension
 	PaddingSize      byte
 }
 
-type Packet struct {
-	Header
+type RtpPacket struct {
+	RtpHeader
 	Payload     []byte
 	PaddingSize byte
 }
 
-func (h *Header) Unmarshal(buf []byte) (n int, err error) {
-	if len(buf) < headerLength {
-		return 0, fmt.Errorf("%w: %d < %d", errHeaderSizeInsufficient, len(buf), headerLength)
+func (h *RtpHeader) Unmarshal(buf []byte) (n int, err error) {
+	if len(buf) < rtpHeaderLength {
+		return 0, fmt.Errorf("%w: %d < %d", rtpErrHeaderSizeInsufficient, len(buf), rtpHeaderLength)
 	}
 
-	h.Version = buf[0] >> versionShift & versionMask
-	h.Padding = (buf[0] >> paddingShift & paddingMask) > 0
-	h.Extension = (buf[0] >> extensionShift & extensionMask) > 0
-	nCSRC := int(buf[0] & ccMask)
+	h.Version = buf[0] >> rtpVersionShift & rtpVersionMask
+	h.Padding = (buf[0] >> rtpPaddingShift & rtpPaddingMask) > 0
+	h.Extension = (buf[0] >> rtpExtensionShift & rtpExtensionMask) > 0
+	nCSRC := int(buf[0] & rtpCcMask)
 	if cap(h.CSRC) < nCSRC {
 		h.CSRC = make([]uint32, nCSRC)
 	} else {
 		h.CSRC = h.CSRC[:nCSRC]
 	}
 
-	n = csrcOffset + (nCSRC * csrcLength)
+	n = rtpCsrcOffset + (nCSRC * rtpCsrcLength)
 	if len(buf) < n {
 		return n, fmt.Errorf("size %d < %d: %w", len(buf), n,
-			errHeaderSizeInsufficient)
+			rtpErrHeaderSizeInsufficient)
 	}
 	headerLength := n
 
-	h.Marker = (buf[1] >> markerShift & markerMask) > 0
-	h.PayloadType = buf[1] & ptMask
+	h.Marker = (buf[1] >> rtpMarkerShift & rtpMarkerMask) > 0
+	h.PayloadType = buf[1] & rtpPtMask
 
-	h.SequenceNumber = binary.BigEndian.Uint16(buf[seqNumOffset : seqNumOffset+seqNumLength])
-	h.Timestamp = binary.BigEndian.Uint32(buf[timestampOffset : timestampOffset+timestampLength])
-	h.SSRC = binary.BigEndian.Uint32(buf[ssrcOffset : ssrcOffset+ssrcLength])
+	h.SequenceNumber = binary.BigEndian.Uint16(buf[rtpSeqNumOffset : rtpSeqNumOffset+rtpSeqNumLength])
+	h.Timestamp = binary.BigEndian.Uint32(buf[rtpTimestampOffset : rtpTimestampOffset+rtpTimestampLength])
+	h.SSRC = binary.BigEndian.Uint32(buf[rtpSsrcOffset : rtpSsrcOffset+rtpSsrcLength])
 
 	for i := range h.CSRC {
-		offset := csrcOffset + (i * csrcLength)
+		offset := rtpCsrcOffset + (i * rtpCsrcLength)
 		h.CSRC[i] = binary.BigEndian.Uint32(buf[offset:])
 	}
 
@@ -147,7 +142,7 @@ func (h *Header) Unmarshal(buf []byte) (n int, err error) {
 		if expected := n + 4; len(buf) < expected {
 			return n, fmt.Errorf("size %d < %d: %w",
 				len(buf), expected,
-				errHeaderSizeInsufficientForExtension,
+				rtpErrHeaderSizeInsufficientForExtension,
 			)
 		}
 
@@ -159,28 +154,28 @@ func (h *Header) Unmarshal(buf []byte) (n int, err error) {
 		headerLength = extensionEnd
 
 		if len(buf) < extensionEnd {
-			return n, fmt.Errorf("size %d < %d: %w", len(buf), extensionEnd, errHeaderSizeInsufficientForExtension)
+			return n, fmt.Errorf("size %d < %d: %w", len(buf), extensionEnd, rtpErrHeaderSizeInsufficientForExtension)
 		}
 
-		if h.ExtensionProfile == ExtensionProfileOneByte || h.ExtensionProfile == ExtensionProfileTwoByte {
+		if h.ExtensionProfile == RtpExtensionProfileOneByte || h.ExtensionProfile == RtpExtensionProfileTwoByte {
 			var (
 				extid      uint8
 				payloadLen int
 			)
 
 			for n < extensionEnd {
-				if buf[n] == extensionIDPadding {
+				if buf[n] == rtpExtensionIDPadding {
 					n++
 
 					continue
 				}
 
-				if h.ExtensionProfile == ExtensionProfileOneByte {
+				if h.ExtensionProfile == RtpExtensionProfileOneByte {
 					extid = buf[n] >> 4
 					payloadLen = int(buf[n]&^0xF0 + 1)
 					n++
 
-					if extid == extensionIDReserved || extid == extensionIDPadding {
+					if extid == rtpExtensionIDReserved || extid == rtpExtensionIDPadding {
 						break
 					}
 				} else {
@@ -188,7 +183,7 @@ func (h *Header) Unmarshal(buf []byte) (n int, err error) {
 					n++
 
 					if extensionEnd <= n {
-						return n, fmt.Errorf("size %d < %d: %w", extensionEnd, n, errHeaderSizeInsufficientForExtension)
+						return n, fmt.Errorf("size %d < %d: %w", extensionEnd, n, rtpErrHeaderSizeInsufficientForExtension)
 					}
 
 					payloadLen = int(buf[n])
@@ -196,16 +191,16 @@ func (h *Header) Unmarshal(buf []byte) (n int, err error) {
 				}
 
 				if extensionPayloadEnd := n + payloadLen; extensionEnd < extensionPayloadEnd {
-					return n, fmt.Errorf("size %d < %d: %w", extensionEnd, extensionPayloadEnd, errHeaderSizeInsufficientForExtension)
+					return n, fmt.Errorf("size %d < %d: %w", extensionEnd, extensionPayloadEnd, rtpErrHeaderSizeInsufficientForExtension)
 				}
 
-				extension := Extension{id: extid, payload: buf[n : n+payloadLen]}
+				extension := RtpExtension{id: extid, payload: buf[n : n+payloadLen]}
 				h.Extensions = append(h.Extensions, extension)
 				n += payloadLen
 			}
 		} else {
 
-			extension := Extension{id: 0, payload: buf[n:extensionEnd]}
+			extension := RtpExtension{id: 0, payload: buf[n:extensionEnd]}
 			h.Extensions = append(h.Extensions, extension)
 		}
 	}
@@ -213,28 +208,28 @@ func (h *Header) Unmarshal(buf []byte) (n int, err error) {
 	return headerLength, nil
 }
 
-func (p *Packet) Unmarshal(buf []byte) error {
-	n, err := p.Header.Unmarshal(buf)
+func (p *RtpPacket) Unmarshal(buf []byte) error {
+	n, err := p.RtpHeader.Unmarshal(buf)
 	if err != nil {
 		return err
 	}
 
 	end := len(buf)
-	if p.Header.Padding {
+	if p.RtpHeader.Padding {
 		if end <= n {
-			return errTooSmall
+			return rtpErrTooSmall
 		}
-		p.Header.PaddingSize = buf[end-1]
-		if p.Header.PaddingSize == 0 {
-			return errInvalidRTPPadding
+		p.RtpHeader.PaddingSize = buf[end-1]
+		if p.RtpHeader.PaddingSize == 0 {
+			return rtpErrInvalidRTPPadding
 		}
-		end -= int(p.Header.PaddingSize)
+		end -= int(p.RtpHeader.PaddingSize)
 	} else {
-		p.Header.PaddingSize = 0
+		p.RtpHeader.PaddingSize = 0
 	}
-	p.PaddingSize = p.Header.PaddingSize
+	p.PaddingSize = p.RtpHeader.PaddingSize
 	if end < n {
-		return errTooSmall
+		return rtpErrTooSmall
 	}
 
 	p.Payload = buf[n:end]
@@ -242,24 +237,24 @@ func (p *Packet) Unmarshal(buf []byte) error {
 	return nil
 }
 
-func (h Header) MarshalTo(buf []byte) (n int, err error) {
+func (h RtpHeader) MarshalTo(buf []byte) (n int, err error) {
 	size := h.MarshalSize()
 	if size > len(buf) {
 		return 0, io.ErrShortBuffer
 	}
 
-	buf[0] = (h.Version << versionShift) | uint8(len(h.CSRC))
+	buf[0] = (h.Version << rtpVersionShift) | uint8(len(h.CSRC))
 	if h.Padding {
-		buf[0] |= 1 << paddingShift
+		buf[0] |= 1 << rtpPaddingShift
 	}
 
 	if h.Extension {
-		buf[0] |= 1 << extensionShift
+		buf[0] |= 1 << rtpExtensionShift
 	}
 
 	buf[1] = h.PayloadType
 	if h.Marker {
-		buf[1] |= 1 << markerShift
+		buf[1] |= 1 << rtpMarkerShift
 	}
 
 	binary.BigEndian.PutUint16(buf[2:4], h.SequenceNumber)
@@ -280,14 +275,14 @@ func (h Header) MarshalTo(buf []byte) (n int, err error) {
 
 		switch h.ExtensionProfile {
 
-		case ExtensionProfileOneByte:
+		case RtpExtensionProfileOneByte:
 			for _, extension := range h.Extensions {
 				buf[n] = extension.id<<4 | (uint8(len(extension.payload)) - 1)
 				n++
 				n += copy(buf[n:], extension.payload)
 			}
 
-		case ExtensionProfileTwoByte:
+		case RtpExtensionProfileTwoByte:
 			for _, extension := range h.Extensions {
 				buf[n] = extension.id
 				n++
@@ -321,21 +316,21 @@ func (h Header) MarshalTo(buf []byte) (n int, err error) {
 	return n, nil
 }
 
-func (h Header) MarshalSize() int {
+func (h RtpHeader) MarshalSize() int {
 
-	size := 12 + (len(h.CSRC) * csrcLength)
+	size := 12 + (len(h.CSRC) * rtpCsrcLength)
 
 	if h.Extension {
 		extSize := 4
 
 		switch h.ExtensionProfile {
 
-		case ExtensionProfileOneByte:
+		case RtpExtensionProfileOneByte:
 			for _, extension := range h.Extensions {
 				extSize += 1 + len(extension.payload)
 			}
 
-		case ExtensionProfileTwoByte:
+		case RtpExtensionProfileTwoByte:
 			for _, extension := range h.Extensions {
 				extSize += 2 + len(extension.payload)
 			}
@@ -351,9 +346,9 @@ func (h Header) MarshalSize() int {
 	return size
 }
 
-func (h *Header) SetExtension(id uint8, payload []byte) error {
+func (h *RtpHeader) SetExtension(id uint8, payload []byte) error {
 	if h.Extension {
-		if err := headerExtensionCheck(h.ExtensionProfile, id, payload); err != nil {
+		if err := rtpHeaderExtensionCheck(h.ExtensionProfile, id, payload); err != nil {
 			return err
 		}
 
@@ -365,7 +360,7 @@ func (h *Header) SetExtension(id uint8, payload []byte) error {
 			}
 		}
 
-		h.Extensions = append(h.Extensions, Extension{id: id, payload: payload})
+		h.Extensions = append(h.Extensions, RtpExtension{id: id, payload: payload})
 
 		return nil
 	}
@@ -374,17 +369,17 @@ func (h *Header) SetExtension(id uint8, payload []byte) error {
 
 	switch payloadLen := len(payload); {
 	case payloadLen <= 16:
-		h.ExtensionProfile = ExtensionProfileOneByte
+		h.ExtensionProfile = RtpExtensionProfileOneByte
 	case payloadLen > 16 && payloadLen < 256:
-		h.ExtensionProfile = ExtensionProfileTwoByte
+		h.ExtensionProfile = RtpExtensionProfileTwoByte
 	}
 
-	h.Extensions = append(h.Extensions, Extension{id: id, payload: payload})
+	h.Extensions = append(h.Extensions, RtpExtension{id: id, payload: payload})
 
 	return nil
 }
 
-func (h *Header) GetExtensionIDs() []uint8 {
+func (h *RtpHeader) GetExtensionIDs() []uint8 {
 	if !h.Extension {
 		return nil
 	}
@@ -401,7 +396,7 @@ func (h *Header) GetExtensionIDs() []uint8 {
 	return ids
 }
 
-func (h *Header) GetExtension(id uint8) []byte {
+func (h *RtpHeader) GetExtension(id uint8) []byte {
 	if !h.Extension {
 		return nil
 	}
@@ -414,14 +409,14 @@ func (h *Header) GetExtension(id uint8) []byte {
 	return nil
 }
 
-func (h Header) Clone() Header {
+func (h RtpHeader) Clone() RtpHeader {
 	clone := h
 	if h.CSRC != nil {
 		clone.CSRC = make([]uint32, len(h.CSRC))
 		copy(clone.CSRC, h.CSRC)
 	}
 	if h.Extensions != nil {
-		ext := make([]Extension, len(h.Extensions))
+		ext := make([]RtpExtension, len(h.Extensions))
 		for i, e := range h.Extensions {
 			ext[i] = e
 			if e.payload != nil {
@@ -435,7 +430,7 @@ func (h Header) Clone() Header {
 	return clone
 }
 
-func marshalPayloadAndPaddingTo(buf []byte, offset int, header *Header, payload []byte, paddingSize byte,
+func rtpMarshalPayloadAndPaddingTo(buf []byte, offset int, header *RtpHeader, payload []byte, paddingSize byte,
 ) (n int, err error) {
 
 	if offset+len(payload)+int(paddingSize) > len(buf) {
@@ -451,61 +446,58 @@ func marshalPayloadAndPaddingTo(buf []byte, offset int, header *Header, payload 
 	return offset + m + int(paddingSize), nil
 }
 
-func MarshalPacketTo(buf []byte, header *Header, payload []byte) (int, error) {
+func RtpMarshalPacketTo(buf []byte, header *RtpHeader, payload []byte) (int, error) {
 	n, err := header.MarshalTo(buf)
 	if err != nil {
 		return 0, err
 	}
 
-	return marshalPayloadAndPaddingTo(buf, n, header, payload, header.PaddingSize)
+	return rtpMarshalPayloadAndPaddingTo(buf, n, header, payload, header.PaddingSize)
 }
 
-func HeaderAndPacketMarshalSize(header *Header, payload []byte) (headerSize int, packetSize int) {
+func RtpHeaderAndPacketMarshalSize(header *RtpHeader, payload []byte) (headerSize int, packetSize int) {
 	headerSize = header.MarshalSize()
 
 	return headerSize, headerSize + len(payload) + int(header.PaddingSize)
 }
 
-type Payloader interface {
+type RtpPayloader interface {
 	Payload(mtu uint16, payload []byte) [][]byte
 }
 
-type Packetizer interface {
-	Packetize(payload []byte, samples uint32) []*Packet
-	GeneratePadding(samples uint32) []*Packet
+type RtpPacketizer interface {
+	Packetize(payload []byte, samples uint32) []*RtpPacket
+	GeneratePadding(samples uint32) []*RtpPacket
 	SkipSamples(skippedSamples uint32)
 }
 
-type packetizer struct {
+type rtpPacketizer struct {
 	MTU         uint16
 	PayloadType uint8
 	SSRC        uint32
-	Payloader   Payloader
-	Sequencer   Sequencer
+	Payloader   RtpPayloader
+	Sequencer   RtpSequencer
 	Timestamp   uint32
 	ClockRate   uint32
 }
 
-func WithTimestamp(timestamp uint32) func(*packetizer) {
-	return func(p *packetizer) {
+func RtpWithTimestamp(timestamp uint32) func(*rtpPacketizer) {
+	return func(p *rtpPacketizer) {
 		p.Timestamp = timestamp
 	}
 }
 
-type PacketizerOption func(*packetizer)
+type RtpPacketizerOption func(*rtpPacketizer)
 
-func NewPacketizerWithOptions(
+func RtpNewPacketizerWithOptions(
 	mtu uint16,
-	payloader Payloader,
-	sequencer Sequencer,
-	clockRate uint32,
-	options ...PacketizerOption,
-) Packetizer {
-	packetizerInstance := &packetizer{
+	payloader RtpPayloader, sequencer RtpSequencer, clockRate uint32,
+	options ...RtpPacketizerOption) RtpPacketizer {
+	packetizerInstance := &rtpPacketizer{
 		MTU:       mtu,
 		Payloader: payloader,
 		Sequencer: sequencer,
-		Timestamp: globalMathRandomGenerator.Uint32(),
+		Timestamp: rtpGlobalMathRandomGenerator.Uint32(),
 		ClockRate: clockRate,
 	}
 
@@ -516,7 +508,7 @@ func NewPacketizerWithOptions(
 	return packetizerInstance
 }
 
-func (p *packetizer) Packetize(payload []byte, samples uint32) []*Packet {
+func (p *rtpPacketizer) Packetize(payload []byte, samples uint32) []*RtpPacket {
 
 	if len(payload) == 0 {
 		p.SkipSamples(samples)
@@ -525,11 +517,11 @@ func (p *packetizer) Packetize(payload []byte, samples uint32) []*Packet {
 	}
 
 	payloads := p.Payloader.Payload(p.MTU-12, payload)
-	packets := make([]*Packet, len(payloads))
+	packets := make([]*RtpPacket, len(payloads))
 
 	for i, pp := range payloads {
-		packets[i] = &Packet{
-			Header: Header{
+		packets[i] = &RtpPacket{
+			RtpHeader: RtpHeader{
 				Version:        2,
 				Padding:        false,
 				Extension:      false,
@@ -547,17 +539,17 @@ func (p *packetizer) Packetize(payload []byte, samples uint32) []*Packet {
 	return packets
 }
 
-func (p *packetizer) GeneratePadding(samples uint32) []*Packet {
+func (p *rtpPacketizer) GeneratePadding(samples uint32) []*RtpPacket {
 
 	if samples == 0 {
 		return nil
 	}
 
-	packets := make([]*Packet, samples)
+	packets := make([]*RtpPacket, samples)
 
 	for i := 0; i < int(samples); i++ {
-		packets[i] = &Packet{
-			Header: Header{
+		packets[i] = &RtpPacket{
+			RtpHeader: RtpHeader{
 				Version:        2,
 				Padding:        true,
 				Extension:      false,
@@ -574,51 +566,34 @@ func (p *packetizer) GeneratePadding(samples uint32) []*Packet {
 	return packets
 }
 
-func (p *packetizer) SkipSamples(skippedSamples uint32) {
+func (p *rtpPacketizer) SkipSamples(skippedSamples uint32) {
 	p.Timestamp += skippedSamples
 }
 
-type Sequencer interface {
+type RtpSequencer interface {
 	NextSequenceNumber() uint16
 }
 
-const maxInitialRandomSequenceNumber = 1<<15 - 1
+const rtpMaxInitialRandomSequenceNumber = 1<<15 - 1
 
-func NewRandomSequencer() Sequencer {
-	s := &sequencer{}
-	s.state.Store(uint64(globalMathRandomGenerator.Intn(maxInitialRandomSequenceNumber)))
+func RtpNewRandomSequencer() RtpSequencer {
+	s := &rtpSequencer{}
+	s.state.Store(uint64(rtpGlobalMathRandomGenerator.Intn(rtpMaxInitialRandomSequenceNumber)))
 
 	return s
 }
 
-func NewFixedSequencer(s uint16) Sequencer {
-	seq := &sequencer{}
+func RtpNewFixedSequencer(s uint16) RtpSequencer {
+	seq := &rtpSequencer{}
 	seq.state.Store(uint64(s - 1))
 
 	return seq
 }
 
-type sequencer struct {
+type rtpSequencer struct {
 	state atomic.Uint64
 }
 
-func (s *sequencer) NextSequenceNumber() uint16 {
+func (s *rtpSequencer) NextSequenceNumber() uint16 {
 	return uint16(s.state.Add(1))
-}
-
-const (
-	transportCCExtensionSize = 2
-)
-
-type TransportCCExtension struct {
-	TransportSequence uint16
-}
-
-func (t *TransportCCExtension) Unmarshal(rawData []byte) error {
-	if len(rawData) < transportCCExtensionSize {
-		return errTooSmall
-	}
-	t.TransportSequence = binary.BigEndian.Uint16(rawData[0:2])
-
-	return nil
 }

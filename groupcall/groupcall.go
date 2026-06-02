@@ -135,8 +135,9 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 	gc.leaving = false
 	gc.reconnMu.Unlock()
 	gc.installParticipantHandler()
-	const maxAttempts = 5
+	const maxAttempts = 3
 	var lastErr error
+	backoff := 2 * time.Second
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -153,14 +154,18 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 		gc.log.Warnf("join attempt %d failed: %v", attempt, err)
 		_ = gc.leaveCallSilent()
 
-		if !errors.Is(err, errRetryable) {
+		if !errors.Is(err, errRetryable) && !transport.IsSignalingNotReady(err) {
 			return err
 		}
 		if attempt < maxAttempts {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			if backoff > 8*time.Second {
+				backoff = 8 * time.Second
 			}
 		}
 	}

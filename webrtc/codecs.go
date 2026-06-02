@@ -3,13 +3,12 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package codecs
+package webrtc
 
 func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
-
 	return b
 }
 
@@ -19,10 +18,8 @@ func (p *OpusPayloader) Payload(_ uint16, payload []byte) [][]byte {
 	if payload == nil {
 		return [][]byte{}
 	}
-
 	out := make([]byte, len(payload))
 	copy(out, payload)
-
 	return [][]byte{out}
 }
 
@@ -81,21 +78,13 @@ func vp9IsKeyframe(frame []byte) bool {
 	if frameMarker != 0x2 {
 		return false
 	}
-	profileLow := (b >> 4) & 0x3
-	profile := profileLow
-	off := 0
-	if profile == 3 {
-		off = 1
-	}
-	_ = off
+	profile := (b >> 4) & 0x3
 	showExisting := (b >> 3) & 0x1
 	if profile <= 2 {
-		showExisting = (b >> 3) & 0x1
 		if showExisting == 1 {
 			return false
 		}
-		frameType := (b >> 2) & 0x1
-		return frameType == 0
+		return ((b >> 2) & 0x1) == 0
 	}
 	if showExisting == 1 {
 		return false
@@ -103,8 +92,7 @@ func vp9IsKeyframe(frame []byte) bool {
 	if len(frame) < 2 {
 		return false
 	}
-	frameType := (frame[1] >> 7) & 0x1
-	return frameType == 0
+	return ((frame[1] >> 7) & 0x1) == 0
 }
 
 type VP8Payloader struct {
@@ -112,9 +100,7 @@ type VP8Payloader struct {
 	pictureID       uint16
 }
 
-const (
-	vp8HeaderSize = 1
-)
+const vp8HeaderSize = 1
 
 func (p *VP8Payloader) Payload(mtu uint16, payload []byte) [][]byte {
 	usingHeaderSize := vp8HeaderSize

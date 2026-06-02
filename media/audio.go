@@ -13,8 +13,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
-	"github.com/amarnathcjd/gortc/webrtc/webrtc/pkg/media/oggreader"
+	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 const (
@@ -24,7 +23,7 @@ const (
 )
 
 type Sender interface {
-	SendAudio(*rtp.Packet)
+	SendAudio(*webrtc.RtpPacket)
 }
 
 func StreamOggOpusFile(send Sender, ssrc uint32, filename string) error {
@@ -41,7 +40,7 @@ func StreamOggOpus(send Sender, ssrc uint32, reader io.Reader) error {
 }
 
 func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl) error {
-	ogg, _, err := oggreader.NewWith(reader)
+	ogg, _, err := webrtc.OggNewWith(reader)
 	if err != nil {
 		return fmt.Errorf("create ogg reader: %w", err)
 	}
@@ -101,8 +100,8 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 				samples = samplesPerFrame
 			}
 
-			rtpPkt := &rtp.Packet{
-				Header: rtp.Header{
+			rtpPkt := &webrtc.RtpPacket{
+				RtpHeader: webrtc.RtpHeader{
 					Version:        2,
 					PayloadType:    opusPayloadType,
 					SequenceNumber: seq,
@@ -137,7 +136,7 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 
 // endsContinued reports whether the last segment of the most recent page was
 // 255 bytes — meaning its final packet continues on the next page.
-func endsContinued(o *oggreader.OggReader) bool {
+func endsContinued(o *webrtc.OggOggReader) bool {
 	return o.LastPageLastSegmentSize() == 255
 }
 

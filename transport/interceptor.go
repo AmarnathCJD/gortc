@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
+
 	"github.com/amarnathcjd/gortc/webrtc/sdp"
+	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 // AudioLevelInterceptorFactory stamps the ssrc-audio-level (RFC 6464) and
@@ -54,7 +55,7 @@ func (a *audioLevelInterceptor) BindLocalStream(info *interceptor.StreamInfo, wr
 	a.mu.Lock()
 	a.streams[info.SSRC] = s
 	a.mu.Unlock()
-	return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attrs interceptor.Attributes) (int, error) {
+	return interceptor.RTPWriterFunc(func(header *webrtc.RtpHeader, payload []byte, attrs interceptor.Attributes) (int, error) {
 		if s.hasAudioLevel {
 			// Voice-activity bit (0x80) | level in -dBov (0..127); fixed at -20 dBov.
 			_ = header.SetExtension(s.audioLevelID, []byte{0x80 | 20})
@@ -93,7 +94,7 @@ func (m *markerClearInterceptor) BindLocalStream(info *interceptor.StreamInfo, w
 	if !strings.HasPrefix(info.MimeType, "audio/") {
 		return writer
 	}
-	return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attrs interceptor.Attributes) (int, error) {
+	return interceptor.RTPWriterFunc(func(header *webrtc.RtpHeader, payload []byte, attrs interceptor.Attributes) (int, error) {
 		header.Marker = false
 		return writer.Write(header, payload, attrs)
 	})

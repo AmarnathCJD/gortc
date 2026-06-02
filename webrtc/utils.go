@@ -42,22 +42,6 @@ func IsAddrUnavailable(err error) bool {
 	return runtime.GOOS == "windows" && errno == wsaEADDRNOTAVAIL
 }
 
-func NTPTimestamp(t time.Time) uint64 {
-	s := (float64(t.UnixNano()) / 1000000000) + 2208988800
-	integerPart := uint32(s)
-	fractionalPart := uint32((s - float64(integerPart)) * 0xFFFFFFFF)
-
-	return uint64(integerPart)<<32 | uint64(fractionalPart)
-}
-
-func NTPToTime(t uint64) time.Time {
-	seconds := (t & 0xFFFFFFFF00000000) >> 32
-	fractional := float64(t&0x00000000FFFFFFFF) / float64(0xFFFFFFFF)
-	d := time.Duration(seconds)*time.Second + time.Duration(fractional*1e9)*time.Nanosecond
-
-	return time.Unix(0, 0).Add(-2208988800 * time.Second).Add(d)
-}
-
 func CryptoRandString(n int, runes string) (string, error) {
 	letters := []rune(runes)
 	b := make([]rune, n)
@@ -235,45 +219,6 @@ func MaxInt(a, b int) int {
 
 func AddUint48(b *cryptobyte.Builder, v uint64) {
 	b.AddBytes([]byte{byte(v >> 40), byte(v >> 32), byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
-}
-
-const (
-	maxSequenceNumberPlusOne = int64(65536)
-	seqBreakpoint            = 32768
-)
-
-type SeqUnwrapper struct {
-	init          bool
-	lastUnwrapped int64
-}
-
-func seqIsNewer(value, previous uint16) bool {
-	if value-previous == seqBreakpoint {
-		return value > previous
-	}
-
-	return value != previous && (value-previous) < seqBreakpoint
-}
-
-func (u *SeqUnwrapper) Unwrap(i uint16) int64 {
-	if !u.init {
-		u.init = true
-		u.lastUnwrapped = int64(i)
-
-		return u.lastUnwrapped
-	}
-	lastWrapped := uint16(u.lastUnwrapped)
-	delta := int64(i - lastWrapped)
-	if seqIsNewer(i, lastWrapped) {
-		if delta < 0 {
-			delta += maxSequenceNumberPlusOne
-		}
-	} else if delta > 0 && u.lastUnwrapped+delta-maxSequenceNumberPlusOne >= 0 {
-		delta -= maxSequenceNumberPlusOne
-	}
-	u.lastUnwrapped += delta
-
-	return u.lastUnwrapped
 }
 
 type marshalable interface {

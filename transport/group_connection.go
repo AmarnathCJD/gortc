@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -266,8 +267,8 @@ func (gc *GroupConnection) Open() error {
 			statsPollStop = stop
 			go gc.pollICEStats(pc, stop)
 
-			iceStuckTimer = time.AfterFunc(5*time.Second, func() {
-				gc.log.Warnf("ICE stuck in checking for 5s, closing PeerConnection so caller can rejoin")
+			iceStuckTimer = time.AfterFunc(15*time.Second, func() {
+				gc.log.Warnf("ICE stuck in checking for 15s, closing PeerConnection so caller can rejoin")
 				_ = pc.Close()
 			})
 		}
@@ -425,6 +426,10 @@ func (gc *GroupConnection) Connect(responseJSON string) error {
 	answer := buildAnswerSDP(resp)
 	gc.log.Debugf("setting answer SDP:\n%s", answer)
 
+	if st := gc.pc.SignalingState(); st != webrtc.SignalingStateHaveLocalOffer {
+		return fmt.Errorf("%w: signaling state is %s, expected have-local-offer (peer connection may have been reset between offer and answer)", errSignalingNotReady, st)
+	}
+
 	if err := gc.pc.SetRemoteDescription(webrtc.SessionDescription{
 		Type: webrtc.SDPTypeAnswer,
 		SDP:  answer,
@@ -433,6 +438,10 @@ func (gc *GroupConnection) Connect(responseJSON string) error {
 	}
 	return nil
 }
+
+var errSignalingNotReady = errors.New("signaling-not-ready")
+
+func IsSignalingNotReady(err error) bool { return errors.Is(err, errSignalingNotReady) }
 
 func (gc *GroupConnection) AddAudioTrack() (*webrtc.TrackLocalStaticRTP, error) {
 	gc.mu.Lock()

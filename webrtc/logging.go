@@ -3,7 +3,7 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package logging
+package webrtc
 
 import (
 	"fmt"
@@ -23,15 +23,10 @@ func (ll *LogLevel) Get() LogLevel {
 
 const (
 	LogLevelDisabled LogLevel = iota
-
 	LogLevelError
-
 	LogLevelWarn
-
 	LogLevelInfo
-
 	LogLevelDebug
-
 	LogLevelTrace
 )
 
@@ -60,7 +55,6 @@ type loggerWriter struct {
 func (lw *loggerWriter) Write(data []byte) (int, error) {
 	lw.RLock()
 	defer lw.RUnlock()
-
 	return lw.output.Write(data)
 }
 
@@ -76,31 +70,26 @@ type DefaultLeveledLogger struct {
 
 func (ll *DefaultLeveledLogger) WithTraceLogger(log *log.Logger) *DefaultLeveledLogger {
 	ll.trace = log
-
 	return ll
 }
 
 func (ll *DefaultLeveledLogger) WithDebugLogger(log *log.Logger) *DefaultLeveledLogger {
 	ll.debug = log
-
 	return ll
 }
 
 func (ll *DefaultLeveledLogger) WithInfoLogger(log *log.Logger) *DefaultLeveledLogger {
 	ll.info = log
-
 	return ll
 }
 
 func (ll *DefaultLeveledLogger) WithWarnLogger(log *log.Logger) *DefaultLeveledLogger {
 	ll.warn = log
-
 	return ll
 }
 
 func (ll *DefaultLeveledLogger) WithErrorLogger(log *log.Logger) *DefaultLeveledLogger {
 	ll.err = log
-
 	return ll
 }
 
@@ -108,7 +97,6 @@ func (ll *DefaultLeveledLogger) logf(logger *log.Logger, level LogLevel, format 
 	if ll.level.Get() < level {
 		return
 	}
-
 	callDepth := 3
 	msg := fmt.Sprintf(format, args...)
 	if err := logger.Output(callDepth, msg); err != nil {
@@ -116,45 +104,16 @@ func (ll *DefaultLeveledLogger) logf(logger *log.Logger, level LogLevel, format 
 	}
 }
 
-func (ll *DefaultLeveledLogger) Trace(msg string) {
-	ll.logf(ll.trace, LogLevelTrace, msg)
-}
-
-func (ll *DefaultLeveledLogger) Tracef(format string, args ...any) {
-	ll.logf(ll.trace, LogLevelTrace, format, args...)
-}
-
-func (ll *DefaultLeveledLogger) Debug(msg string) {
-	ll.logf(ll.debug, LogLevelDebug, msg)
-}
-
-func (ll *DefaultLeveledLogger) Debugf(format string, args ...any) {
-	ll.logf(ll.debug, LogLevelDebug, format, args...)
-}
-
-func (ll *DefaultLeveledLogger) Info(msg string) {
-	ll.logf(ll.info, LogLevelInfo, msg)
-}
-
-func (ll *DefaultLeveledLogger) Infof(format string, args ...any) {
-	ll.logf(ll.info, LogLevelInfo, format, args...)
-}
-
-func (ll *DefaultLeveledLogger) Warn(msg string) {
-	ll.logf(ll.warn, LogLevelWarn, msg)
-}
-
-func (ll *DefaultLeveledLogger) Warnf(format string, args ...any) {
-	ll.logf(ll.warn, LogLevelWarn, format, args...)
-}
-
-func (ll *DefaultLeveledLogger) Error(msg string) {
-	ll.logf(ll.err, LogLevelError, msg)
-}
-
-func (ll *DefaultLeveledLogger) Errorf(format string, args ...any) {
-	ll.logf(ll.err, LogLevelError, format, args...)
-}
+func (ll *DefaultLeveledLogger) Trace(msg string)          { ll.logf(ll.trace, LogLevelTrace, "%s", msg) }
+func (ll *DefaultLeveledLogger) Tracef(f string, a ...any) { ll.logf(ll.trace, LogLevelTrace, f, a...) }
+func (ll *DefaultLeveledLogger) Debug(msg string)          { ll.logf(ll.debug, LogLevelDebug, "%s", msg) }
+func (ll *DefaultLeveledLogger) Debugf(f string, a ...any) { ll.logf(ll.debug, LogLevelDebug, f, a...) }
+func (ll *DefaultLeveledLogger) Info(msg string)           { ll.logf(ll.info, LogLevelInfo, "%s", msg) }
+func (ll *DefaultLeveledLogger) Infof(f string, a ...any)  { ll.logf(ll.info, LogLevelInfo, f, a...) }
+func (ll *DefaultLeveledLogger) Warn(msg string)           { ll.logf(ll.warn, LogLevelWarn, "%s", msg) }
+func (ll *DefaultLeveledLogger) Warnf(f string, a ...any)  { ll.logf(ll.warn, LogLevelWarn, f, a...) }
+func (ll *DefaultLeveledLogger) Error(msg string)          { ll.logf(ll.err, LogLevelError, "%s", msg) }
+func (ll *DefaultLeveledLogger) Errorf(f string, a ...any) { ll.logf(ll.err, LogLevelError, f, a...) }
 
 func NewDefaultLeveledLoggerForScope(scope string, level LogLevel, writer io.Writer) *DefaultLeveledLogger {
 	if writer == nil {
@@ -164,7 +123,6 @@ func NewDefaultLeveledLoggerForScope(scope string, level LogLevel, writer io.Wri
 		writer: &loggerWriter{output: writer},
 		level:  level,
 	}
-
 	return logger.
 		WithTraceLogger(log.New(logger.writer, fmt.Sprintf("%s TRACE: ", scope), log.Lmicroseconds|log.Lshortfile)).
 		WithDebugLogger(log.New(logger.writer, fmt.Sprintf("%s DEBUG: ", scope), log.Lmicroseconds|log.Lshortfile)).
@@ -196,37 +154,29 @@ func NewDefaultLoggerFactory() *DefaultLoggerFactory {
 
 	for name, level := range logLevels {
 		env := os.Getenv(fmt.Sprintf("LOG_%s", name))
-
 		if env == "" {
 			continue
 		}
-
 		if strings.ToLower(env) == "all" {
 			if factory.DefaultLogLevel < level {
 				factory.DefaultLogLevel = level
 			}
-
 			continue
 		}
-
 		scopes := strings.Split(strings.ToLower(env), ",")
 		for _, scope := range scopes {
 			factory.ScopeLevels[scope] = level
 		}
 	}
-
 	return &factory
 }
 
 func (f *DefaultLoggerFactory) NewLogger(scope string) LeveledLogger {
 	logLevel := f.DefaultLogLevel
 	if f.ScopeLevels != nil {
-		scopeLevel, found := f.ScopeLevels[scope]
-
-		if found {
+		if scopeLevel, found := f.ScopeLevels[scope]; found {
 			logLevel = scopeLevel
 		}
 	}
-
 	return NewDefaultLeveledLoggerForScope(scope, logLevel, f.Writer)
 }

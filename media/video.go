@@ -11,9 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
-	"github.com/amarnathcjd/gortc/webrtc/rtp/codecs"
-	"github.com/amarnathcjd/gortc/webrtc/webrtc/pkg/media/ivfreader"
+	webrtc "github.com/amarnathcjd/gortc/webrtc"
 )
 
 const (
@@ -27,7 +25,7 @@ type videoPayloader interface {
 }
 
 type VideoSender interface {
-	SendVideo(*rtp.Packet)
+	SendVideo(*webrtc.RtpPacket)
 }
 
 func StreamIVFFile(send VideoSender, ssrc uint32, filename string) error {
@@ -44,7 +42,7 @@ func StreamIVF(send VideoSender, ssrc uint32, reader io.Reader) error {
 }
 
 func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playControl) error {
-	ivf, header, err := ivfreader.NewWith(reader)
+	ivf, header, err := webrtc.IvfNewWith(reader)
 	if err != nil {
 		return fmt.Errorf("create ivf reader: %w", err)
 	}
@@ -60,10 +58,10 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 	cur, seq, ts := loadCursor(ssrc)
 	defer func() { saveCursor(cur, seq, ts) }()
 
-	var payloader videoPayloader = &codecs.VP8Payloader{}
+	var payloader videoPayloader = &webrtc.VP8Payloader{}
 	payloadType := uint8(vp8PayloadType)
 	if header.FourCC == "VP90" {
-		payloader = &codecs.VP9Payloader{}
+		payloader = &webrtc.VP9Payloader{}
 		payloadType = vp9PayloadType
 	}
 	const mtu = 1200
@@ -91,8 +89,8 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 		payloads := payloader.Payload(mtu, frame)
 		for i, p := range payloads {
 			marker := i == len(payloads)-1
-			pkt := &rtp.Packet{
-				Header: rtp.Header{
+			pkt := &webrtc.RtpPacket{
+				RtpHeader: webrtc.RtpHeader{
 					Version:        2,
 					PayloadType:    payloadType,
 					SequenceNumber: seq,

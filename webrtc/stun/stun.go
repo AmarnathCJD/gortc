@@ -20,7 +20,6 @@ import (
 	"strings"
 
 	"github.com/amarnathcjd/gortc/webrtc"
-	"github.com/amarnathcjd/gortc/webrtc/transport"
 )
 
 var bin = binary.BigEndian
@@ -1307,7 +1306,7 @@ func (a XORMappedAddress) AddToAs(msg *Message, attr AttrType) error {
 	bin.PutUint32(xorValue[0:4], magicCookie)
 	bin.PutUint16(value[0:2], family)
 	bin.PutUint16(value[2:4], uint16(a.Port^magicCookie>>16))
-	transport.XorBytes(value[4:4+len(ip)], ip, xorValue)
+	webrtc.TransportXorBytes(value[4:4+len(ip)], ip, xorValue)
 	msg.Add(attr, value[:4+len(ip)])
 
 	return nil
@@ -1352,7 +1351,7 @@ func (a *XORMappedAddress) GetFromAs(msg *Message, attr AttrType) error {
 	xorValue := make([]byte, 4+TransactionIDSize)
 	bin.PutUint32(xorValue[0:4], magicCookie)
 	copy(xorValue[4:], msg.TransactionID[:])
-	transport.XorBytes(a.IP, value[4:], xorValue)
+	webrtc.TransportXorBytes(a.IP, value[4:], xorValue)
 
 	return nil
 }

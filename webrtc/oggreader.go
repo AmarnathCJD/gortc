@@ -3,7 +3,7 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package oggreader
+package webrtc
 
 import (
 	"encoding/binary"
@@ -13,25 +13,25 @@ import (
 )
 
 const (
-	pageHeaderTypeBeginningOfStream = 0x02
-	pageHeaderSignature             = "OggS"
+	oggPageHeaderTypeBeginningOfStream = 0x02
+	oggPageHeaderSignature             = "OggS"
 
-	idPageBasePayloadLength = 19
-	pageHeaderLen           = 27
+	oggIdPageBasePayloadLength = 19
+	oggPageHeaderLen           = 27
 )
 
 var (
-	errNilStream                       = errors.New("stream is nil")
-	errBadIDPageSignature              = errors.New("bad header signature")
-	errBadIDPageType                   = errors.New("wrong header, expected beginning of stream")
-	errBadIDPageLength                 = errors.New("payload for id page must be 19 bytes")
-	errBadIDPagePayloadSignature       = errors.New("bad payload signature")
-	errShortPageHeader                 = errors.New("not enough data for payload header")
-	errChecksumMismatch                = errors.New("expected and actual checksum do not match")
-	errUnsupportedChannelMappingFamily = errors.New("unsupported channel mapping family")
+	oggErrNilStream                       = errors.New("stream is nil")
+	oggErrBadIDPageSignature              = errors.New("bad header signature")
+	oggErrBadIDPageType                   = errors.New("wrong header, expected beginning of stream")
+	oggErrBadIDPageLength                 = errors.New("payload for id page must be 19 bytes")
+	oggErrBadIDPagePayloadSignature       = errors.New("bad payload signature")
+	oggErrShortPageHeader                 = errors.New("not enough data for payload header")
+	oggErrChecksumMismatch                = errors.New("expected and actual checksum do not match")
+	oggErrUnsupportedChannelMappingFamily = errors.New("unsupported channel mapping family")
 )
 
-type OggReader struct {
+type OggOggReader struct {
 	stream               io.Reader
 	bytesReadSuccesfully int64
 	checksumTable        *[256]uint32
@@ -39,7 +39,7 @@ type OggReader struct {
 	lastSegSizes         []byte
 }
 
-type OggHeader struct {
+type OggOggHeader struct {
 	ChannelMap     uint8
 	Channels       uint8
 	OutputGain     uint16
@@ -51,7 +51,7 @@ type OggHeader struct {
 	ChannelMapping string
 }
 
-type OggPageHeader struct {
+type OggOggPageHeader struct {
 	GranulePosition uint64
 	sig             [4]byte
 	version         uint8
@@ -61,39 +61,39 @@ type OggPageHeader struct {
 	segmentsCount   uint8
 }
 
-type HeaderType string
+type OggHeaderType string
 
 const (
-	headerUnknown  HeaderType = ""
-	HeaderOpusID   HeaderType = "OpusHead"
-	HeaderOpusTags HeaderType = "OpusTags"
+	oggHeaderUnknown  OggHeaderType = ""
+	OggHeaderOpusID   OggHeaderType = "OpusHead"
+	OggHeaderOpusTags OggHeaderType = "OpusTags"
 )
 
-func opusPayloadSignature(payload []byte) (HeaderType, bool) {
+func oggOpusPayloadSignature(payload []byte) (OggHeaderType, bool) {
 	if len(payload) < 8 {
-		return headerUnknown, false
+		return oggHeaderUnknown, false
 	}
 
-	sig := HeaderType(payload[:8])
-	if sig == HeaderOpusID || sig == HeaderOpusTags {
+	sig := OggHeaderType(payload[:8])
+	if sig == OggHeaderOpusID || sig == OggHeaderOpusTags {
 		return sig, true
 	}
 
-	return headerUnknown, false
+	return oggHeaderUnknown, false
 }
 
-func NewWith(in io.Reader) (*OggReader, *OggHeader, error) {
-	return newWith(in, true)
+func OggNewWith(in io.Reader) (*OggOggReader, *OggOggHeader, error) {
+	return oggNewWith(in, true)
 }
 
-func newWith(in io.Reader, doChecksum bool) (*OggReader, *OggHeader, error) {
+func oggNewWith(in io.Reader, doChecksum bool) (*OggOggReader, *OggOggHeader, error) {
 	if in == nil {
-		return nil, nil, errNilStream
+		return nil, nil, oggErrNilStream
 	}
 
-	reader := &OggReader{
+	reader := &OggOggReader{
 		stream:        in,
-		checksumTable: generateChecksumTable(),
+		checksumTable: oggGenerateChecksumTable(),
 		doChecksum:    doChecksum,
 	}
 
@@ -105,46 +105,46 @@ func newWith(in io.Reader, doChecksum bool) (*OggReader, *OggHeader, error) {
 	return reader, header, nil
 }
 
-func (o *OggReader) readOpusHeader() (*OggHeader, error) {
+func (o *OggOggReader) readOpusHeader() (*OggOggHeader, error) {
 	payload, pageHeader, err := o.ParseNextPage()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := validateOpusPageHeader(pageHeader, payload); err != nil {
+	if err := oggValidateOpusPageHeader(pageHeader, payload); err != nil {
 		return nil, err
 	}
 
-	header := parseBasicHeaderFields(payload)
-	if err := parseChannelMapping(header, payload); err != nil {
+	header := oggParseBasicHeaderFields(payload)
+	if err := oggParseChannelMapping(header, payload); err != nil {
 		return nil, err
 	}
 
 	return header, nil
 }
 
-func validateOpusPageHeader(pageHeader *OggPageHeader, payload []byte) error {
-	if string(pageHeader.sig[:]) != pageHeaderSignature {
-		return errBadIDPageSignature
+func oggValidateOpusPageHeader(pageHeader *OggOggPageHeader, payload []byte) error {
+	if string(pageHeader.sig[:]) != oggPageHeaderSignature {
+		return oggErrBadIDPageSignature
 	}
 
-	if pageHeader.headerType != pageHeaderTypeBeginningOfStream {
-		return errBadIDPageType
+	if pageHeader.headerType != oggPageHeaderTypeBeginningOfStream {
+		return oggErrBadIDPageType
 	}
 
-	if len(payload) < idPageBasePayloadLength {
-		return errBadIDPageLength
+	if len(payload) < oggIdPageBasePayloadLength {
+		return oggErrBadIDPageLength
 	}
 
-	if sig, ok := opusPayloadSignature(payload); !ok || sig != HeaderOpusID {
-		return fmt.Errorf("%w: expected OpusHead, got %s", errBadIDPagePayloadSignature, sig)
+	if sig, ok := oggOpusPayloadSignature(payload); !ok || sig != OggHeaderOpusID {
+		return fmt.Errorf("%w: expected OpusHead, got %s", oggErrBadIDPagePayloadSignature, sig)
 	}
 
 	return nil
 }
 
-func parseBasicHeaderFields(payload []byte) *OggHeader {
-	header := &OggHeader{}
+func oggParseBasicHeaderFields(payload []byte) *OggOggHeader {
+	header := &OggOggHeader{}
 	header.Version = payload[8]
 	header.Channels = payload[9]
 	header.PreSkip = binary.LittleEndian.Uint16(payload[10:12])
@@ -155,30 +155,30 @@ func parseBasicHeaderFields(payload []byte) *OggHeader {
 	return header
 }
 
-func parseChannelMapping(header *OggHeader, payload []byte) error {
+func oggParseChannelMapping(header *OggOggHeader, payload []byte) error {
 	switch header.ChannelMap {
 	case 0:
-		return validatePayloadLength(payload, idPageBasePayloadLength)
+		return oggValidatePayloadLength(payload, oggIdPageBasePayloadLength)
 	case 1, 2, 255:
-		return parseExtendedChannelMapping(header, payload)
+		return oggParseExtendedChannelMapping(header, payload)
 	case 3:
-		return fmt.Errorf("%w: ambisonics family type 3 is not supported", errUnsupportedChannelMappingFamily)
+		return fmt.Errorf("%w: ambisonics family type 3 is not supported", oggErrUnsupportedChannelMappingFamily)
 	default:
-		return errUnsupportedChannelMappingFamily
+		return oggErrUnsupportedChannelMappingFamily
 	}
 }
 
-func validatePayloadLength(payload []byte, expectedLen int) error {
+func oggValidatePayloadLength(payload []byte, expectedLen int) error {
 	if len(payload) != expectedLen {
-		return errBadIDPageLength
+		return oggErrBadIDPageLength
 	}
 
 	return nil
 }
 
-func parseExtendedChannelMapping(header *OggHeader, payload []byte) error {
+func oggParseExtendedChannelMapping(header *OggOggHeader, payload []byte) error {
 	expectedPayloadLen := 21 + int(header.Channels)
-	if err := validatePayloadLength(payload, expectedPayloadLen); err != nil {
+	if err := oggValidatePayloadLength(payload, expectedPayloadLen); err != nil {
 		return err
 	}
 
@@ -189,17 +189,17 @@ func parseExtendedChannelMapping(header *OggHeader, payload []byte) error {
 	return nil
 }
 
-func (o *OggReader) ParseNextPage() ([]byte, *OggPageHeader, error) {
-	header := make([]byte, pageHeaderLen)
+func (o *OggOggReader) ParseNextPage() ([]byte, *OggOggPageHeader, error) {
+	header := make([]byte, oggPageHeaderLen)
 
 	n, err := io.ReadFull(o.stream, header)
 	if err != nil {
 		return nil, nil, err
 	} else if n < len(header) {
-		return nil, nil, errShortPageHeader
+		return nil, nil, oggErrShortPageHeader
 	}
 
-	pageHeader := &OggPageHeader{
+	pageHeader := &OggOggPageHeader{
 		sig: [4]byte{header[0], header[1], header[2], header[3]},
 	}
 
@@ -249,7 +249,7 @@ func (o *OggReader) ParseNextPage() ([]byte, *OggPageHeader, error) {
 		}
 
 		if binary.LittleEndian.Uint32(header[22:22+4]) != checksum {
-			return nil, nil, errChecksumMismatch
+			return nil, nil, oggErrChecksumMismatch
 		}
 	}
 
@@ -259,13 +259,7 @@ func (o *OggReader) ParseNextPage() ([]byte, *OggPageHeader, error) {
 	return payload, pageHeader, nil
 }
 
-// ParseNextPageSegments returns the page's individual packets split per the
-// ogg lacing table (consecutive 255-byte segments belong to the same packet,
-// and the first <255 segment ends it). For Opus, each returned []byte is one
-// Opus packet — what an RTP payload should carry. A packet may be continued
-// on the next page if the last segment is 255; the continuation arrives on
-// the following page's first packet (headerType bit 0x01 indicates that).
-func (o *OggReader) ParseNextPageSegments() ([][]byte, *OggPageHeader, error) {
+func (o *OggOggReader) ParseNextPageSegments() ([][]byte, *OggOggPageHeader, error) {
 	payload, hdr, err := o.ParseNextPage()
 	if err != nil {
 		return nil, nil, err
@@ -295,7 +289,7 @@ func (o *OggReader) ParseNextPageSegments() ([][]byte, *OggPageHeader, error) {
 // lastSegmentSizes returns the i-th segment size from the most recent page.
 // We keep a copy on the reader for ParseNextPageSegments to avoid changing
 // the ParseNextPage return signature.
-func (o *OggReader) lastSegmentSizes(i int) byte {
+func (o *OggOggReader) lastSegmentSizes(i int) byte {
 	if i < 0 || i >= len(o.lastSegSizes) {
 		return 0
 	}
@@ -305,14 +299,14 @@ func (o *OggReader) lastSegmentSizes(i int) byte {
 // LastPageLastSegmentSize returns the size of the final segment of the most
 // recently parsed page (0 if no page has been parsed). A value of 255 means
 // the page's last packet continues onto the next page.
-func (o *OggReader) LastPageLastSegmentSize() byte {
+func (o *OggOggReader) LastPageLastSegmentSize() byte {
 	if len(o.lastSegSizes) == 0 {
 		return 0
 	}
 	return o.lastSegSizes[len(o.lastSegSizes)-1]
 }
 
-func generateChecksumTable() *[256]uint32 {
+func oggGenerateChecksumTable() *[256]uint32 {
 	var table [256]uint32
 	const poly = 0x04c11db7
 

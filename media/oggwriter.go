@@ -11,8 +11,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
+	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 // RFC 7845 (Ogg encapsulation for Opus).
@@ -114,7 +113,7 @@ func (o *oggWriter) writePage(payload []byte, granule uint64, headerType byte) e
 	return nil
 }
 
-func (o *oggWriter) writePacket(p *rtp.Packet) error {
+func (o *oggWriter) writePacket(p *webrtc.RtpPacket) error {
 	if o.closed {
 		return io.ErrClosedPipe
 	}

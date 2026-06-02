@@ -12,8 +12,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
+	wutil "github.com/amarnathcjd/gortc/webrtc"
 )
 
 type TrackKind int
@@ -48,7 +48,7 @@ type IncomingTrack struct {
 }
 
 type recorder interface {
-	writePacket(p *rtp.Packet) error
+	writePacket(p *wutil.RtpPacket) error
 	Close() error
 }
 
@@ -76,7 +76,7 @@ func (t *IncomingTrack) Codec() string               { return t.mimeType }
 func (t *IncomingTrack) ClockRate() uint32           { return t.clock }
 func (t *IncomingTrack) Remote() *webrtc.TrackRemote { return t.remote }
 
-func (t *IncomingTrack) ReadRTP() (*rtp.Packet, error) {
+func (t *IncomingTrack) ReadRTP() (*wutil.RtpPacket, error) {
 	pkt, _, err := t.remote.ReadRTP()
 	return pkt, err
 }

@@ -15,7 +15,6 @@ import (
 	"math"
 	"net"
 	"net/netip"
-	"os"
 	"reflect"
 	"slices"
 	"sort"
@@ -26,11 +25,9 @@ import (
 	"time"
 
 	"github.com/amarnathcjd/gortc/webrtc"
-	stunx "github.com/amarnathcjd/gortc/webrtc/ice/internal/stun"
-	"github.com/amarnathcjd/gortc/webrtc/ice/internal/taskloop"
-	"github.com/amarnathcjd/gortc/webrtc/logging"
+
 	"github.com/amarnathcjd/gortc/webrtc/stun"
-	"github.com/amarnathcjd/gortc/webrtc/transport"
+	stunx "github.com/amarnathcjd/gortc/webrtc/ice/internal/stun"
 
 	"github.com/google/uuid"
 	"golang.org/x/net/dns/dnsmessage"
@@ -177,7 +174,7 @@ type bindingRequest struct {
 }
 
 type Agent struct {
-	loop                              *taskloop.Loop
+	loop                              *webrtc.TaskloopLoop
 	constructed                       bool
 	onConnectionStateChangeHdlr       atomic.Value
 	onSelectedCandidatePairChangeHdlr atomic.Value
@@ -227,7 +224,7 @@ type Agent struct {
 	networkTypes                      []NetworkType
 	turnTransportProtocols            []NetworkType
 	addressRewriteRules               []AddressRewriteRule
-	buf                               *transport.Buffer
+	buf                               *webrtc.TransportBuffer
 	pendingBindingRequests            []bindingRequest
 	addressRewriteMapper              *addressRewriteMapper
 	userBindingRequestHandler         func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
@@ -236,12 +233,11 @@ type Agent struct {
 	connectionStateNotifier           *handlerNotifier
 	candidateNotifier                 *handlerNotifier
 	selectedCandidatePairNotifier     *handlerNotifier
-	loggerFactory                     logging.LoggerFactory
-	log                               logging.LeveledLogger
-	net                               transport.Net
+	loggerFactory                     webrtc.LoggerFactory
+	log                               webrtc.LeveledLogger
+	net                               webrtc.TransportNet
 	tcpMux                            TCPMux
 	udpMux                            UDPMux
-	udpMuxSrflx                       UniversalUDPMux
 	interfaceFilter                   func(string) (keep bool)
 	ipFilter                          func(net.IP) (keep bool)
 	remoteIPFilter                    func(net.IP) (keep bool)
@@ -415,7 +411,7 @@ func createAgentBase(config *AgentConfig) (*Agent, error) {
 
 	loggerFactory := config.LoggerFactory
 	if loggerFactory == nil {
-		loggerFactory = logging.NewDefaultLoggerFactory()
+		loggerFactory = webrtc.NewDefaultLoggerFactory()
 	}
 	log := loggerFactory.NewLogger("ice")
 
@@ -433,7 +429,7 @@ func createAgentBase(config *AgentConfig) (*Agent, error) {
 		networkTypes:                    normalizedNetworkTypes,
 		turnTransportProtocols:          normalizedTURNTransportProtocols,
 		onConnected:                     make(chan struct{}),
-		buf:                             transport.NewBuffer(),
+		buf:                             webrtc.TransportNewBuffer(),
 		startedCh:                       startedCtx.Done(),
 		startedFn:                       startedFn,
 		portMin:                         config.PortMin,
@@ -444,7 +440,6 @@ func createAgentBase(config *AgentConfig) (*Agent, error) {
 		proxyDialer:                     config.ProxyDialer,
 		tcpMux:                          config.TCPMux,
 		udpMux:                          config.UDPMux,
-		udpMuxSrflx:                     config.UDPMuxSrflx,
 		mDNSMode:                        mDNSMode,
 		mDNSName:                        mDNSName,
 		gatherCandidateCancel:           func() {},
@@ -516,7 +511,7 @@ func newAgentWithConfig(agent *Agent, opts ...AgentOption) (*Agent, error) {
 	}
 
 	if agent.net == nil {
-		agent.net, err = transport.NewNet()
+		agent.net, err = webrtc.TransportNewNet()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create network: %w", err)
 		}
@@ -571,7 +566,7 @@ func newAgentWithConfig(agent *Agent, opts ...AgentOption) (*Agent, error) {
 		return nil, err
 	}
 
-	agent.loop = taskloop.New(func() {
+	agent.loop = webrtc.TaskloopNew(func() {
 		agent.gatherCandidateCancel()
 		if agent.gatherCandidateDone != nil {
 			<-agent.gatherCandidateDone
@@ -1379,9 +1374,6 @@ func (a *Agent) removeUfragFromMux() {
 	if a.udpMux != nil {
 		a.udpMux.RemoveConnByUfrag(a.localUfrag)
 	}
-	if a.udpMuxSrflx != nil {
-		a.udpMuxSrflx.RemoveConnByUfrag(a.localUfrag)
-	}
 }
 
 func (a *Agent) Close() error {
@@ -2099,7 +2091,7 @@ type AgentConfig struct {
 	NetworkTypes                    []NetworkType
 	turnTransportProtocols          []NetworkType
 	CandidateTypes                  []CandidateType
-	LoggerFactory                   logging.LoggerFactory
+	LoggerFactory                   webrtc.LoggerFactory
 	MaxBindingRequests              *uint16
 	Lite                            bool
 	NAT1To1IPCandidateType          CandidateType
@@ -2109,14 +2101,13 @@ type AgentConfig struct {
 	PrflxAcceptanceMinWait          *time.Duration
 	RelayAcceptanceMinWait          *time.Duration
 	STUNGatherTimeout               *time.Duration
-	Net                             transport.Net
+	Net                             webrtc.TransportNet
 	InterfaceFilter                 func(string) (keep bool)
 	IPFilter                        func(net.IP) (keep bool)
 	RemoteIPFilter                  func(net.IP) (keep bool)
 	InsecureSkipVerify              bool
 	TCPMux                          TCPMux
 	UDPMux                          UDPMux
-	UDPMuxSrflx                     UniversalUDPMux
 	ProxyDialer                     proxy.Dialer
 	AcceptAggressiveNomination      bool
 	IncludeLoopback                 bool
@@ -2832,7 +2823,7 @@ func WithRemoteIPFilter(filter func(net.IP) bool) AgentOption {
 	}
 }
 
-func WithNet(net transport.Net) AgentOption {
+func WithNet(net webrtc.TransportNet) AgentOption {
 	return func(a *Agent) error {
 		if a.constructed {
 			return ErrAgentOptionNotUpdatable
@@ -3089,7 +3080,7 @@ func WithInterfaceFilter(filter func(string) bool) AgentOption {
 	}
 }
 
-func WithLoggerFactory(loggerFactory logging.LoggerFactory) AgentOption {
+func WithLoggerFactory(loggerFactory webrtc.LoggerFactory) AgentOption {
 	return func(a *Agent) error {
 		if a.constructed {
 			return ErrAgentOptionNotUpdatable
@@ -4931,7 +4922,7 @@ var (
 	ErrLocalUfragInsufficientBits             = errors.New("local username fragment is less than 24 bits long")
 	ErrLocalPwdInsufficientBits               = errors.New("local password is less than 128 bits long")
 	ErrProtoType                              = errors.New("invalid transport protocol type")
-	ErrClosed                                 = taskloop.ErrClosed
+	ErrClosed                                 = webrtc.TaskloopErrClosed
 	ErrNoCandidatePairs                       = errors.New("no candidate pairs available")
 	ErrCanceledByCaller                       = errors.New("connecting canceled by caller")
 	ErrMultipleStart                          = errors.New("attempted to start agent twice")
@@ -4958,7 +4949,7 @@ var (
 	ErrIneffectiveNAT1To1IPMappingSrflx = errors.New("address rewrite for srflx candidate ineffective")
 	ErrIneffectiveAddressRewriteSrflx   = ErrIneffectiveNAT1To1IPMappingSrflx
 	ErrInvalidMulticastDNSHostName      = errors.New(
-		"invalid mDNS HostName, must end with .local and can only contain a single '.'",
+		"invalid mDNS HostName, must end with local and can only contain a single '.'",
 	)
 	ErrRunCanceled                       = errors.New("run was canceled by done")
 	ErrTCPRemoteAddrAlreadyExists        = errors.New("conn with same remote addr already exists")
@@ -4984,8 +4975,6 @@ var (
 	errUDPMuxDisabled                    = errors.New("UDPMux is not enabled")
 	errUnknownRole                       = errors.New("unknown role")
 	errWriteSTUNMessageToIceConn         = errors.New("failed to write STUN message to ICE connection")
-	errFailedToCastUDPAddr               = errors.New("failed to cast net.Addr to net.UDPAddr")
-	errInvalidIPAddress                  = errors.New("invalid ip address")
 )
 
 var errInvalidNAT1To1IPMapping = errors.New("invalid NAT1To1 IP mapping")
@@ -5069,7 +5058,7 @@ func urlSupportsSrflxGathering(url stun.URI) bool {
 	return url.Scheme == stun.SchemeTypeSTUN || url.Scheme == stun.SchemeTypeTURN
 }
 
-func closeConnAndLog(c io.Closer, log logging.LeveledLogger, msg string, args ...any) {
+func closeConnAndLog(c io.Closer, log webrtc.LeveledLogger, msg string, args ...any) {
 	if c == nil || (reflect.ValueOf(c).Kind() == reflect.Ptr && reflect.ValueOf(c).IsNil()) {
 		log.Warnf("Connection is not allocated: "+msg, args...)
 
@@ -5186,7 +5175,7 @@ func appendHostMappedAddrs(
 	mappedAddrs []netip.Addr,
 	mappedIPs []net.IP,
 	addr netip.Addr,
-	log logging.LeveledLogger,
+	log webrtc.LeveledLogger,
 ) []netip.Addr {
 	for _, mappedIP := range mappedIPs {
 		conv, ok := netip.AddrFromSlice(mappedIP)
@@ -5256,11 +5245,7 @@ func (a *Agent) gatherServerReflexiveCandidates(ctx context.Context, wg *sync.Wa
 	if !replaceSrflx {
 		wg.Add(1)
 		go func() {
-			if a.udpMuxSrflx != nil {
-				a.gatherCandidatesSrflxUDPMux(ctx, a.urls, a.networkTypes)
-			} else {
-				a.gatherCandidatesSrflx(ctx, a.urls, a.networkTypes)
-			}
+			a.gatherCandidatesSrflx(ctx, a.urls, a.networkTypes)
 			wg.Done()
 		}()
 	}
@@ -5475,8 +5460,7 @@ func (a *Agent) gatherCandidatesLocalUDPMux(ctx context.Context) error {
 		}
 		candidateIPs := []net.IP{udpAddr.IP}
 
-		if _, ok := a.udpMux.(*UDPMuxDefault); ok && !a.includeLoopback && udpAddr.IP.IsLoopback() {
-
+		if !a.includeLoopback && udpAddr.IP.IsLoopback() {
 			continue
 		}
 
@@ -5652,89 +5636,6 @@ func (a *Agent) gatherCandidatesSrflxMapped(ctx context.Context, networkTypes []
 				}
 			}
 		}()
-	}
-}
-
-func (a *Agent) gatherCandidatesSrflxUDPMux(ctx context.Context, urls []*stun.URI, networkTypes []NetworkType) {
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
-	for _, networkType := range networkTypes {
-		if networkType.IsTCP() {
-			continue
-		}
-
-		for i := range urls {
-			if !urlSupportsSrflxGathering(*urls[i]) {
-				continue
-			}
-
-			for _, listenAddr := range a.udpMuxSrflx.GetListenAddresses() {
-				udpAddr, ok := listenAddr.(*net.UDPAddr)
-				if !ok {
-					a.log.Warn("Failed to cast udpMuxSrflx listen address to UDPAddr")
-
-					continue
-				}
-				wg.Add(1)
-				go func(url stun.URI, network string, localAddr *net.UDPAddr) {
-					defer wg.Done()
-
-					hostPort := net.JoinHostPort(url.Host, strconv.Itoa(url.Port))
-					serverAddr, err := a.net.ResolveUDPAddr(network, hostPort)
-					if err != nil {
-						a.log.Debugf("Failed to resolve STUN host: %s %s: %v", network, hostPort, err)
-
-						return
-					}
-
-					if shouldFilterLocationTracked(serverAddr.IP) {
-						a.log.Warnf("STUN host %s is somehow filtered for location tracking reasons", hostPort)
-
-						return
-					}
-
-					xorAddr, err := a.udpMuxSrflx.GetXORMappedAddr(serverAddr, a.stunGatherTimeout)
-					if err != nil {
-						a.log.Warnf("Failed get server reflexive address %s %s: %v", network, url, err)
-
-						return
-					}
-
-					conn, err := a.udpMuxSrflx.GetConnForURL(a.localUfrag, url.String(), localAddr)
-					if err != nil {
-						a.log.Warnf("Failed to find connection in UDPMuxSrflx %s %s: %v", network, url, err)
-
-						return
-					}
-
-					ip := xorAddr.IP
-					port := xorAddr.Port
-
-					srflxConfig := CandidateServerReflexiveConfig{
-						Network:   network,
-						Address:   ip.String(),
-						Port:      port,
-						Component: ComponentRTP,
-						RelAddr:   localAddr.IP.String(),
-						RelPort:   localAddr.Port,
-					}
-					c, err := NewCandidateServerReflexive(&srflxConfig)
-					if err != nil {
-						closeConnAndLog(conn, a.log, "failed to create server reflexive candidate: %s %s %d: %v", network, ip, port, err)
-
-						return
-					}
-
-					if err := a.addCandidate(ctx, c, conn); err != nil {
-						if closeErr := c.close(); closeErr != nil {
-							a.log.Warnf("Failed to close candidate: %v", closeErr)
-						}
-						a.log.Warnf("Failed to append to localCandidates and run onCandidateHdlr: %v", err)
-					}
-				}(*urls[i], networkType.String(), udpAddr)
-			}
-		}
 	}
 }
 
@@ -5951,7 +5852,7 @@ func (a *Agent) startNetworkMonitoring(ctx context.Context) {
 
 func (a *Agent) detectNetworkChanges() bool {
 
-	if stdNet, ok := a.net.(*transport.StdNet); ok {
+	if stdNet, ok := a.net.(*webrtc.TransportStdNet); ok {
 		if err := stdNet.UpdateInterfaces(); err != nil {
 			a.log.Warnf("Failed to update interfaces: %v", err)
 		}
@@ -6173,15 +6074,13 @@ func generateMulticastDNSName() (string, error) {
 }
 
 func createMulticastDNS(
-	_ transport.Net,
-	_ []NetworkType,
-	_ []*transport.Interface,
-	_ bool,
+	_ webrtc.TransportNet, _ []NetworkType,
+	_ []*webrtc.TransportInterface, _ bool,
 	_ net.IP,
 	mDNSMode MulticastDNSMode,
 	_ string,
-	_ logging.LeveledLogger,
-	_ logging.LoggerFactory,
+	_ webrtc.LeveledLogger,
+	_ webrtc.LoggerFactory,
 ) (*mdnsConn, MulticastDNSMode, error) {
 	return nil, mDNSMode, nil
 }
@@ -6213,19 +6112,18 @@ func isZeros(ip net.IP) bool {
 }
 
 func localInterfaces(
-	n transport.Net,
-	interfaceFilter func(string) (keep bool),
+	n webrtc.TransportNet, interfaceFilter func(string) (keep bool),
 	ipFilter func(net.IP) (keep bool),
 	networkTypes []NetworkType,
 	includeLoopback bool,
-) ([]*transport.Interface, []ifaceAddr, error) {
+) ([]*webrtc.TransportInterface, []ifaceAddr, error) {
 	ipAddrs := []ifaceAddr{}
 	ifaces, err := n.Interfaces()
 	if err != nil {
 		return nil, ipAddrs, err
 	}
 
-	filteredIfaces := make([]*transport.Interface, 0, len(ifaces))
+	filteredIfaces := make([]*webrtc.TransportInterface, 0, len(ifaces))
 
 	var ipV4Requested, ipv6Requested bool
 	if len(networkTypes) == 0 {
@@ -6294,12 +6192,11 @@ func localInterfaces(
 }
 
 func listenUDPInPortRange(
-	netTransport transport.Net,
-	log logging.LeveledLogger,
+	netTransport webrtc.TransportNet, log webrtc.LeveledLogger,
 	portMax, portMin int,
 	network string,
 	lAddr *net.UDPAddr,
-) (transport.UDPConn, error) {
+) (webrtc.TransportUDPConn, error) {
 	if (lAddr.Port != 0) || ((portMin == 0) && (portMax == 0)) {
 		return netTransport.ListenUDP(network, lAddr)
 	}
@@ -6612,7 +6509,7 @@ type controllingSelector struct {
 	startTime     time.Time
 	agent         *Agent
 	nominatedPair *CandidatePair
-	log           logging.LeveledLogger
+	log           webrtc.LeveledLogger
 }
 
 func (s *controllingSelector) Start() {
@@ -6846,7 +6743,7 @@ func (s *controllingSelector) checkForAutomaticRenomination() {
 
 type controlledSelector struct {
 	agent          *Agent
-	log            logging.LeveledLogger
+	log            webrtc.LeveledLogger
 	lastNomination *uint32
 }
 
@@ -7382,596 +7279,6 @@ type UDPMux interface {
 	GetConn(ufrag string, addr net.Addr) (net.PacketConn, error)
 	RemoveConnByUfrag(ufrag string)
 	GetListenAddresses() []net.Addr
-}
-
-type UDPMuxDefault struct {
-	params                   UDPMuxParams
-	closedChan               chan struct{}
-	closeOnce                sync.Once
-	connsIPv4, connsIPv6     map[string]*udpMuxedConn
-	addressMapMu             sync.RWMutex
-	addressMap               map[ipPort]*udpMuxedConn
-	pool                     *sync.Pool
-	mu                       sync.Mutex
-	localAddrsForUnspecified []net.Addr
-}
-
-type UDPMuxParams struct {
-	Logger        logging.LeveledLogger
-	UDPConn       net.PacketConn
-	UDPConnString string
-	Net           transport.Net
-}
-
-func NewUDPMuxDefault(params UDPMuxParams) *UDPMuxDefault {
-	if params.Logger == nil {
-		params.Logger = logging.NewDefaultLoggerFactory().NewLogger("ice")
-	}
-
-	var localAddrsForUnspecified []net.Addr
-	if udpAddr, ok := params.UDPConn.LocalAddr().(*net.UDPAddr); !ok {
-		params.Logger.Errorf("LocalAddr is not a net.UDPAddr, got %T", params.UDPConn.LocalAddr())
-	} else if ok && udpAddr.IP.IsUnspecified() {
-
-		params.Logger.Warn("UDPMuxDefault should not listening on unspecified address, use NewMultiUDPMuxFromPort instead")
-		var networks []NetworkType
-		switch {
-		case udpAddr.IP.To4() != nil:
-			networks = []NetworkType{NetworkTypeUDP4}
-
-		case udpAddr.IP.To16() != nil:
-			networks = []NetworkType{NetworkTypeUDP4, NetworkTypeUDP6}
-
-		default:
-			params.Logger.Errorf("LocalAddr expected IPV4 or IPV6, got %T", params.UDPConn.LocalAddr())
-		}
-		if len(networks) > 0 {
-			if params.Net == nil {
-				var err error
-				if params.Net, err = transport.NewNet(); err != nil {
-					params.Logger.Errorf("Failed to get create network: %v", err)
-				}
-			}
-
-			_, addrs, err := localInterfaces(params.Net, nil, nil, networks, true)
-			if err == nil {
-				localAddrsForUnspecified = make([]net.Addr, len(addrs))
-				for i, addr := range addrs {
-					localAddrsForUnspecified[i] = &net.UDPAddr{
-						IP:   addr.addr.AsSlice(),
-						Port: udpAddr.Port,
-						Zone: addr.addr.Zone(),
-					}
-				}
-			} else {
-				params.Logger.Errorf("Failed to get local interfaces for unspecified addr: %v", err)
-			}
-		}
-	}
-	params.UDPConnString = params.UDPConn.LocalAddr().String()
-
-	mux := &UDPMuxDefault{
-		addressMap: map[ipPort]*udpMuxedConn{},
-		params:     params,
-		connsIPv4:  make(map[string]*udpMuxedConn),
-		connsIPv6:  make(map[string]*udpMuxedConn),
-		closedChan: make(chan struct{}, 1),
-		pool: &sync.Pool{
-			New: func() any {
-
-				return newBufferHolder(receiveMTU)
-			},
-		},
-		localAddrsForUnspecified: localAddrsForUnspecified,
-	}
-
-	go mux.connWorker()
-
-	return mux
-}
-
-func (m *UDPMuxDefault) LocalAddr() net.Addr {
-	return m.params.UDPConn.LocalAddr()
-}
-
-func (m *UDPMuxDefault) GetListenAddresses() []net.Addr {
-	if len(m.localAddrsForUnspecified) > 0 {
-		return m.localAddrsForUnspecified
-	}
-
-	return []net.Addr{m.LocalAddr()}
-}
-
-func (m *UDPMuxDefault) GetConn(ufrag string, addr net.Addr) (net.PacketConn, error) {
-
-	if len(m.localAddrsForUnspecified) == 0 && m.params.UDPConnString != addr.String() {
-		return nil, errInvalidAddress
-	}
-
-	var isIPv6 bool
-	if udpAddr, _ := addr.(*net.UDPAddr); udpAddr != nil && udpAddr.IP.To4() == nil {
-		isIPv6 = true
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.IsClosed() {
-		return nil, io.ErrClosedPipe
-	}
-
-	if conn, ok := m.getConn(ufrag, isIPv6); ok {
-		return conn, nil
-	}
-
-	c := m.createMuxedConn(ufrag)
-	go func() {
-		<-c.CloseChannel()
-		m.RemoveConnByUfrag(ufrag)
-	}()
-
-	if isIPv6 {
-		m.connsIPv6[ufrag] = c
-	} else {
-		m.connsIPv4[ufrag] = c
-	}
-
-	return c, nil
-}
-
-func (m *UDPMuxDefault) RemoveConnByUfrag(ufrag string) {
-	removedConns := make([]*udpMuxedConn, 0, 2)
-
-	m.mu.Lock()
-	if c, ok := m.connsIPv4[ufrag]; ok {
-		delete(m.connsIPv4, ufrag)
-		removedConns = append(removedConns, c)
-	}
-	if c, ok := m.connsIPv6[ufrag]; ok {
-		delete(m.connsIPv6, ufrag)
-		removedConns = append(removedConns, c)
-	}
-	m.mu.Unlock()
-
-	if len(removedConns) == 0 {
-
-		return
-	}
-
-	m.addressMapMu.Lock()
-	defer m.addressMapMu.Unlock()
-
-	for _, c := range removedConns {
-		addresses := c.getAddresses()
-		for _, addr := range addresses {
-			delete(m.addressMap, addr)
-		}
-	}
-}
-
-func (m *UDPMuxDefault) IsClosed() bool {
-	select {
-	case <-m.closedChan:
-		return true
-	default:
-		return false
-	}
-}
-
-func (m *UDPMuxDefault) Close() error {
-	var err error
-	m.closeOnce.Do(func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-
-		for _, c := range m.connsIPv4 {
-			_ = c.Close()
-		}
-		for _, c := range m.connsIPv6 {
-			_ = c.Close()
-		}
-
-		m.connsIPv4 = make(map[string]*udpMuxedConn)
-		m.connsIPv6 = make(map[string]*udpMuxedConn)
-
-		close(m.closedChan)
-
-		_ = m.params.UDPConn.Close()
-	})
-
-	return err
-}
-
-func (m *UDPMuxDefault) writeTo(buf []byte, rAddr net.Addr) (n int, err error) {
-	return m.params.UDPConn.WriteTo(buf, rAddr)
-}
-
-func (m *UDPMuxDefault) registerConnForAddress(conn *udpMuxedConn, addr ipPort) {
-	if m.IsClosed() {
-		return
-	}
-
-	m.addressMapMu.Lock()
-	defer m.addressMapMu.Unlock()
-
-	existing, ok := m.addressMap[addr]
-	if ok {
-		existing.removeAddress(addr)
-	}
-	m.addressMap[addr] = conn
-
-	m.params.Logger.Debugf("Registered %s for %s", addr.addr.String(), conn.params.Key)
-}
-
-func (m *UDPMuxDefault) createMuxedConn(key string) *udpMuxedConn {
-	c := newUDPMuxedConn(&udpMuxedConnParams{
-		Mux:       m,
-		Key:       key,
-		AddrPool:  m.pool,
-		LocalAddr: m.LocalAddr(),
-		Logger:    m.params.Logger,
-	})
-
-	return c
-}
-
-func (m *UDPMuxDefault) connWorker() {
-	logger := m.params.Logger
-
-	defer func() {
-		_ = m.Close()
-	}()
-
-	buf := make([]byte, receiveMTU)
-	for {
-		n, addr, err := m.params.UDPConn.ReadFrom(buf)
-		if m.IsClosed() {
-			return
-		} else if err != nil {
-			if os.IsTimeout(err) {
-				continue
-			} else if !errors.Is(err, io.EOF) {
-				logger.Errorf("Failed to read UDP packet: %v", err)
-			}
-
-			return
-		}
-
-		netUDPAddr, ok := addr.(*net.UDPAddr)
-		if !ok {
-			logger.Errorf("Underlying PacketConn did not return a UDPAddr")
-
-			return
-		}
-		udpAddr, err := newIPPort(netUDPAddr.IP, netUDPAddr.Zone, uint16(netUDPAddr.Port))
-		if err != nil {
-			logger.Errorf("Failed to create a new IP/Port host pair")
-
-			return
-		}
-
-		m.addressMapMu.Lock()
-		destinationConn := m.addressMap[udpAddr]
-		m.addressMapMu.Unlock()
-
-		if destinationConn == nil && stun.IsMessage(buf[:n]) {
-			msg := &stun.Message{
-				Raw: append([]byte{}, buf[:n]...),
-			}
-
-			if err = msg.Decode(); err != nil {
-				m.params.Logger.Warnf("Failed to handle decode ICE from %s: %v", addr.String(), err)
-
-				continue
-			}
-
-			attr, stunAttrErr := msg.Get(stun.AttrUsername)
-			if stunAttrErr != nil {
-				m.params.Logger.Warnf("No Username attribute in STUN message from %s", addr.String())
-
-				continue
-			}
-
-			ufrag := strings.Split(string(attr), ":")[0]
-			isIPv6 := netUDPAddr.IP.To4() == nil
-
-			m.mu.Lock()
-			destinationConn, _ = m.getConn(ufrag, isIPv6)
-			m.mu.Unlock()
-		}
-
-		if destinationConn == nil {
-			m.params.Logger.Tracef("Dropping packet from %s, addr: %s", udpAddr.addr, addr)
-
-			continue
-		}
-
-		if err = destinationConn.writePacket(buf[:n], netUDPAddr); err != nil {
-			m.params.Logger.Errorf("Failed to write packet: %v", err)
-		}
-	}
-}
-
-func (m *UDPMuxDefault) getConn(ufrag string, isIPv6 bool) (val *udpMuxedConn, ok bool) {
-	if isIPv6 {
-		val, ok = m.connsIPv6[ufrag]
-	} else {
-		val, ok = m.connsIPv4[ufrag]
-	}
-
-	return
-}
-
-type bufferHolder struct {
-	next *bufferHolder
-	buf  []byte
-	addr *net.UDPAddr
-}
-
-func newBufferHolder(size int) *bufferHolder {
-	return &bufferHolder{
-		buf: make([]byte, size),
-	}
-}
-
-func (b *bufferHolder) reset() {
-	b.next = nil
-	b.addr = nil
-}
-
-type ipPort struct {
-	addr netip.Addr
-	port uint16
-}
-
-func newIPPort(ip net.IP, zone string, port uint16) (ipPort, error) {
-	n, ok := netip.AddrFromSlice(ip.To16())
-	if !ok {
-		return ipPort{}, errInvalidIPAddress
-	}
-
-	return ipPort{
-		addr: n.WithZone(zone),
-		port: port,
-	}, nil
-}
-
-type UniversalUDPMux interface {
-	UDPMux
-	GetXORMappedAddr(stunAddr net.Addr, deadline time.Duration) (*stun.XORMappedAddress, error)
-	GetRelayedAddr(turnAddr net.Addr, deadline time.Duration) (*net.Addr, error)
-	GetConnForURL(ufrag string, url string, addr net.Addr) (net.PacketConn, error)
-}
-
-type udpMuxedConnState int
-
-const (
-	udpMuxedConnOpen udpMuxedConnState = iota
-	udpMuxedConnWaiting
-	udpMuxedConnClosed
-)
-
-type udpMuxedConnParams struct {
-	Mux       *UDPMuxDefault
-	AddrPool  *sync.Pool
-	Key       string
-	LocalAddr net.Addr
-	Logger    logging.LeveledLogger
-}
-
-type udpMuxedConn struct {
-	params           *udpMuxedConnParams
-	addresses        []ipPort
-	bufHead, bufTail *bufferHolder
-	notify           chan struct{}
-	closedChan       chan struct{}
-	state            udpMuxedConnState
-	mu               sync.Mutex
-}
-
-func newUDPMuxedConn(params *udpMuxedConnParams) *udpMuxedConn {
-	return &udpMuxedConn{
-		params:     params,
-		notify:     make(chan struct{}, 1),
-		closedChan: make(chan struct{}),
-	}
-}
-
-func (c *udpMuxedConn) ReadFrom(b []byte) (n int, rAddr net.Addr, err error) {
-	for {
-		c.mu.Lock()
-		if c.bufTail != nil {
-			pkt := c.bufTail
-			c.bufTail = pkt.next
-
-			if pkt == c.bufHead {
-				c.bufHead = nil
-			}
-			c.mu.Unlock()
-
-			if len(b) < len(pkt.buf) {
-				err = io.ErrShortBuffer
-			} else {
-				n = copy(b, pkt.buf)
-				rAddr = pkt.addr
-			}
-
-			pkt.reset()
-			c.params.AddrPool.Put(pkt)
-
-			return n, rAddr, err
-		}
-
-		if c.state == udpMuxedConnClosed {
-			c.mu.Unlock()
-
-			return 0, nil, io.EOF
-		}
-
-		c.state = udpMuxedConnWaiting
-		c.mu.Unlock()
-
-		select {
-		case <-c.notify:
-		case <-c.closedChan:
-			return 0, nil, io.EOF
-		}
-	}
-}
-
-func (c *udpMuxedConn) WriteTo(buf []byte, rAddr net.Addr) (n int, err error) {
-	if c.isClosed() {
-		return 0, io.ErrClosedPipe
-	}
-
-	netUDPAddr, ok := rAddr.(*net.UDPAddr)
-	if !ok {
-		return 0, errFailedToCastUDPAddr
-	}
-
-	port := netUDPAddr.Port
-	if port < 0 || port > 0xFFFF {
-		return 0, ErrPort
-	}
-	ipAndPort, err := newIPPort(netUDPAddr.IP, netUDPAddr.Zone, uint16(port))
-	if err != nil {
-		return 0, err
-	}
-	if !c.containsAddress(ipAndPort) {
-		c.addAddress(ipAndPort)
-	}
-
-	return c.params.Mux.writeTo(buf, rAddr)
-}
-
-func (c *udpMuxedConn) LocalAddr() net.Addr {
-	return c.params.LocalAddr
-}
-
-func (c *udpMuxedConn) SetDeadline(time.Time) error {
-	return nil
-}
-
-func (c *udpMuxedConn) SetReadDeadline(time.Time) error {
-	return nil
-}
-
-func (c *udpMuxedConn) SetWriteDeadline(time.Time) error {
-	return nil
-}
-
-func (c *udpMuxedConn) CloseChannel() <-chan struct{} {
-	return c.closedChan
-}
-
-func (c *udpMuxedConn) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.state != udpMuxedConnClosed {
-		for pkt := c.bufTail; pkt != nil; {
-			next := pkt.next
-
-			pkt.reset()
-			c.params.AddrPool.Put(pkt)
-
-			pkt = next
-		}
-		c.bufHead = nil
-		c.bufTail = nil
-
-		c.state = udpMuxedConnClosed
-		close(c.closedChan)
-	}
-
-	return nil
-}
-
-func (c *udpMuxedConn) isClosed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.state == udpMuxedConnClosed
-}
-
-func (c *udpMuxedConn) getAddresses() []ipPort {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	addresses := make([]ipPort, len(c.addresses))
-	copy(addresses, c.addresses)
-
-	return addresses
-}
-
-func (c *udpMuxedConn) addAddress(addr ipPort) {
-	c.mu.Lock()
-	c.addresses = append(c.addresses, addr)
-	c.mu.Unlock()
-
-	c.params.Mux.registerConnForAddress(c, addr)
-}
-
-func (c *udpMuxedConn) removeAddress(addr ipPort) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	newAddresses := make([]ipPort, 0, len(c.addresses))
-	for _, a := range c.addresses {
-		if a != addr {
-			newAddresses = append(newAddresses, a)
-		}
-	}
-
-	c.addresses = newAddresses
-}
-
-func (c *udpMuxedConn) containsAddress(addr ipPort) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return slices.Contains(c.addresses, addr)
-}
-
-func (c *udpMuxedConn) writePacket(data []byte, addr *net.UDPAddr) error {
-	pkt := c.params.AddrPool.Get().(*bufferHolder)
-	if cap(pkt.buf) < len(data) {
-		c.params.AddrPool.Put(pkt)
-
-		return io.ErrShortBuffer
-	}
-
-	pkt.buf = append(pkt.buf[:0], data...)
-	pkt.addr = addr
-
-	c.mu.Lock()
-	if c.state == udpMuxedConnClosed {
-		c.mu.Unlock()
-
-		pkt.reset()
-		c.params.AddrPool.Put(pkt)
-
-		return io.ErrClosedPipe
-	}
-
-	if c.bufHead != nil {
-		c.bufHead.next = pkt
-	}
-	c.bufHead = pkt
-
-	if c.bufTail == nil {
-		c.bufTail = pkt
-	}
-
-	state := c.state
-	c.state = udpMuxedConnOpen
-	c.mu.Unlock()
-
-	if state == udpMuxedConnWaiting {
-		select {
-		case c.notify <- struct{}{}:
-		default:
-		}
-	}
-
-	return nil
 }
 
 type (

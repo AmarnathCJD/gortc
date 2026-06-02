@@ -42,8 +42,6 @@ import (
 	"time"
 
 	"github.com/amarnathcjd/gortc/webrtc"
-	"github.com/amarnathcjd/gortc/webrtc/logging"
-	"github.com/amarnathcjd/gortc/webrtc/transport"
 
 	"golang.org/x/crypto/cryptobyte"
 )
@@ -469,7 +467,7 @@ type Config struct {
 	RootCAs                       *x509.CertPool
 	ClientCAs                     *x509.CertPool
 	ServerName                    string
-	LoggerFactory                 logging.LoggerFactory
+	LoggerFactory                 webrtc.LoggerFactory
 	MTU                           int
 	ReplayProtectionWindow        int
 	KeyLogWriter                  io.Writer
@@ -588,7 +586,7 @@ type dtlsConfig struct {
 	rootCAs                       *x509.CertPool
 	clientCAs                     *x509.CertPool
 	serverName                    string
-	loggerFactory                 logging.LoggerFactory
+	loggerFactory                 webrtc.LoggerFactory
 	mtu                           int
 	replayProtectionWindow        int
 	keyLogWriter                  io.Writer
@@ -801,7 +799,7 @@ func WithRootCAs(pool *x509.CertPool) Option {
 	})
 }
 
-func WithLoggerFactory(factory logging.LoggerFactory) Option {
+func WithLoggerFactory(factory webrtc.LoggerFactory) Option {
 	return sharedOption(func(c *dtlsConfig) error {
 		c.loggerFactory = factory
 
@@ -1645,7 +1643,7 @@ type State struct {
 	localVerifyData               []byte
 	localKeySignature             []byte
 	peerCertificatesVerified      bool
-	replayDetector                []transport.ReplayDetector
+	replayDetector                []webrtc.TransportReplayDetector
 	peerSupportedProtocols        []string
 	NegotiatedProtocol            string
 }
@@ -2194,7 +2192,7 @@ type handshakeConfig struct {
 	connectionIDGenerator         func() []byte
 	helloRandomBytesGenerator     func() [RandomBytesLength]byte
 	onFlightState                 func(flightVal, handshakeState)
-	log                           logging.LeveledLogger
+	log                           webrtc.LeveledLogger
 	keyLogWriter                  io.Writer
 	localGetCertificate           func(*ClientHelloInfo) (*tls.Certificate, error)
 	localGetClientCertificate     func(*CertificateRequestInfo) (*tls.Certificate, error)
@@ -2460,7 +2458,7 @@ type recvHandshakeState struct {
 
 type Conn struct {
 	lock                           sync.RWMutex
-	nextConn                       transport.PacketConn
+	nextConn                       webrtc.TransportPacketConn
 	fragmentBuffer                 *fragmentBuffer
 	handshakeCache                 *handshakeCache
 	decrypted                      chan any
@@ -2475,9 +2473,9 @@ type Conn struct {
 	connectionClosedByUser         bool
 	closeLock                      sync.Mutex
 	closed                         *Closer
-	readDeadline                   *transport.Deadline
-	writeDeadline                  *transport.Deadline
-	log                            logging.LeveledLogger
+	readDeadline                   *webrtc.TransportDeadline
+	writeDeadline                  *webrtc.TransportDeadline
+	log                            webrtc.LeveledLogger
 	reading                        chan struct{}
 	handshakeRecv                  chan recvHandshakeState
 	cancelHandshaker               func()
@@ -2500,7 +2498,7 @@ func createConn(
 
 	loggerFactory := config.LoggerFactory
 	if loggerFactory == nil {
-		loggerFactory = logging.NewDefaultLoggerFactory()
+		loggerFactory = webrtc.NewDefaultLoggerFactory()
 	}
 
 	logger := loggerFactory.NewLogger("dtls")
@@ -2601,7 +2599,7 @@ func createConn(
 
 	conn := &Conn{
 		rAddr:                   rAddr,
-		nextConn:                transport.NewPacketConn(nextConn),
+		nextConn:                webrtc.TransportNewPacketConn(nextConn),
 		handshakeConfig:         handshakeConfig,
 		fragmentBuffer:          newFragmentBuffer(),
 		handshakeCache:          newHandshakeCache(),
@@ -2611,8 +2609,8 @@ func createConn(
 		decrypted: make(chan any, 1),
 		log:       logger,
 
-		readDeadline:  transport.NewDeadline(),
-		writeDeadline: transport.NewDeadline(),
+		readDeadline:  webrtc.TransportNewDeadline(),
+		writeDeadline: webrtc.TransportNewDeadline(),
 
 		reading:               make(chan struct{}, 1),
 		handshakeRecv:         make(chan recvHandshakeState),
@@ -3243,7 +3241,7 @@ func (c *Conn) handleIncomingPacket(
 
 	for len(c.state.replayDetector) <= int(header.Epoch) {
 		c.state.replayDetector = append(c.state.replayDetector,
-			transport.NewReplayDetector(c.replayProtectionWindow, MaxSequenceNumber),
+			webrtc.TransportNewReplayDetector(c.replayProtectionWindow, MaxSequenceNumber),
 		)
 	}
 	markPacketAsValid, ok := c.state.replayDetector[int(header.Epoch)].Check(header.SequenceNumber)

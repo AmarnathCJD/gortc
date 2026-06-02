@@ -10,8 +10,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/amarnathcjd/gortc/webrtc/rtcp"
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
+	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 type Factory interface {
@@ -29,7 +28,7 @@ type Interceptor interface {
 }
 
 type RTPWriter interface {
-	Write(header *rtp.Header, payload []byte, attributes Attributes) (int, error)
+	Write(header *webrtc.RtpHeader, payload []byte, attributes Attributes) (int, error)
 }
 
 type RTPReader interface {
@@ -37,19 +36,19 @@ type RTPReader interface {
 }
 
 type RTCPWriter interface {
-	Write(pkts []rtcp.Packet, attributes Attributes) (int, error)
+	Write(pkts []webrtc.RtcpPacket, attributes Attributes) (int, error)
 }
 
 type RTCPReader interface {
 	Read([]byte, Attributes) (int, Attributes, error)
 }
 
-type RTPWriterFunc func(header *rtp.Header, payload []byte, attributes Attributes) (int, error)
+type RTPWriterFunc func(header *webrtc.RtpHeader, payload []byte, attributes Attributes) (int, error)
 type RTPReaderFunc func([]byte, Attributes) (int, Attributes, error)
-type RTCPWriterFunc func(pkts []rtcp.Packet, attributes Attributes) (int, error)
+type RTCPWriterFunc func(pkts []webrtc.RtcpPacket, attributes Attributes) (int, error)
 type RTCPReaderFunc func([]byte, Attributes) (int, Attributes, error)
 
-func (f RTPWriterFunc) Write(header *rtp.Header, payload []byte, attributes Attributes) (int, error) {
+func (f RTPWriterFunc) Write(header *webrtc.RtpHeader, payload []byte, attributes Attributes) (int, error) {
 	return f(header, payload, attributes)
 }
 
@@ -57,7 +56,7 @@ func (f RTPReaderFunc) Read(b []byte, a Attributes) (int, Attributes, error) {
 	return f(b, a)
 }
 
-func (f RTCPWriterFunc) Write(pkts []rtcp.Packet, attributes Attributes) (int, error) {
+func (f RTCPWriterFunc) Write(pkts []webrtc.RtcpPacket, attributes Attributes) (int, error) {
 	return f(pkts, attributes)
 }
 
@@ -80,14 +79,14 @@ func (a Attributes) Set(key any, val any) {
 	a[key] = val
 }
 
-func (a Attributes) GetRTPHeader(raw []byte) (*rtp.Header, error) {
+func (a Attributes) GetRTPHeader(raw []byte) (*webrtc.RtpHeader, error) {
 	if val, ok := a[rtpHeaderKey]; ok {
-		if header, ok := val.(*rtp.Header); ok {
+		if header, ok := val.(*webrtc.RtpHeader); ok {
 			return header, nil
 		}
 		return nil, errInvalidType
 	}
-	header := &rtp.Header{}
+	header := &webrtc.RtpHeader{}
 	if _, err := header.Unmarshal(raw); err != nil {
 		return nil, err
 	}
@@ -96,14 +95,14 @@ func (a Attributes) GetRTPHeader(raw []byte) (*rtp.Header, error) {
 	return header, nil
 }
 
-func (a Attributes) GetRTCPPackets(raw []byte) ([]rtcp.Packet, error) {
+func (a Attributes) GetRTCPPackets(raw []byte) ([]webrtc.RtcpPacket, error) {
 	if val, ok := a[rtcpPacketsKey]; ok {
-		if packets, ok := val.([]rtcp.Packet); ok {
+		if packets, ok := val.([]webrtc.RtcpPacket); ok {
 			return packets, nil
 		}
 		return nil, errInvalidType
 	}
-	pkts, err := rtcp.Unmarshal(raw)
+	pkts, err := webrtc.RtcpUnmarshal(raw)
 	if err != nil {
 		return nil, err
 	}

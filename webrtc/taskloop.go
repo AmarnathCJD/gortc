@@ -3,33 +3,31 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package taskloop
+package webrtc
 
 import (
 	"context"
 	"errors"
 	"time"
-
-	"github.com/amarnathcjd/gortc/webrtc"
 )
 
-var ErrClosed = errors.New("the agent is closed")
+var TaskloopErrClosed = errors.New("the agent is closed")
 
-type task struct {
+type taskloopTask struct {
 	fn   func(context.Context)
 	done chan struct{}
 }
 
-type Loop struct {
-	tasks        chan task
+type TaskloopLoop struct {
+	tasks        chan taskloopTask
 	done         chan struct{}
 	taskLoopDone chan struct{}
-	err          webrtc.AtomicErr
+	err          AtomicErr
 }
 
-func New(onClose func()) *Loop {
-	l := &Loop{
-		tasks:        make(chan task),
+func TaskloopNew(onClose func()) *TaskloopLoop {
+	l := &TaskloopLoop{
+		tasks:        make(chan taskloopTask),
 		done:         make(chan struct{}),
 		taskLoopDone: make(chan struct{}),
 	}
@@ -39,7 +37,7 @@ func New(onClose func()) *Loop {
 	return l
 }
 
-func (l *Loop) runLoop(onClose func()) {
+func (l *TaskloopLoop) runLoop(onClose func()) {
 	defer func() {
 		onClose()
 		close(l.taskLoopDone)
@@ -56,18 +54,18 @@ func (l *Loop) runLoop(onClose func()) {
 	}
 }
 
-func (l *Loop) Close() {
+func (l *TaskloopLoop) Close() {
 	if err := l.Err(); err != nil {
 		return
 	}
 
-	l.err.Store(ErrClosed)
+	l.err.Store(TaskloopErrClosed)
 
 	close(l.done)
 	<-l.taskLoopDone
 }
 
-func (l *Loop) Run(ctx context.Context, t func(context.Context)) error {
+func (l *TaskloopLoop) Run(ctx context.Context, t func(context.Context)) error {
 	if err := l.Err(); err != nil {
 		return err
 	}
@@ -76,31 +74,31 @@ func (l *Loop) Run(ctx context.Context, t func(context.Context)) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-l.done:
-		return ErrClosed
-	case l.tasks <- task{t, done}:
+		return TaskloopErrClosed
+	case l.tasks <- taskloopTask{t, done}:
 		<-done
 
 		return nil
 	}
 }
 
-func (l *Loop) Done() <-chan struct{} {
+func (l *TaskloopLoop) Done() <-chan struct{} {
 	return l.done
 }
 
-func (l *Loop) Err() error {
+func (l *TaskloopLoop) Err() error {
 	select {
 	case <-l.done:
-		return ErrClosed
+		return TaskloopErrClosed
 	default:
 		return nil
 	}
 }
 
-func (l *Loop) Deadline() (deadline time.Time, ok bool) {
+func (l *TaskloopLoop) Deadline() (deadline time.Time, ok bool) {
 	return time.Time{}, false
 }
 
-func (l *Loop) Value(any) any {
+func (l *TaskloopLoop) Value(any) any {
 	return nil
 }

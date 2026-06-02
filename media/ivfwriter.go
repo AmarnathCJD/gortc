@@ -9,8 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
+	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 type codecKind int
@@ -38,7 +37,7 @@ type ivfWriter struct {
 }
 
 type frameAssembler interface {
-	push(p *rtp.Packet) ([]byte, bool, error)
+	push(p *webrtc.RtpPacket) ([]byte, bool, error)
 }
 
 func newIVFWriter(w io.WriteCloser, fourcc string, codec codecKind) *ivfWriter {
@@ -69,7 +68,7 @@ func (i *ivfWriter) writeFileHeader() error {
 	return err
 }
 
-func (i *ivfWriter) writePacket(p *rtp.Packet) error {
+func (i *ivfWriter) writePacket(p *webrtc.RtpPacket) error {
 	if i.closed {
 		return io.ErrClosedPipe
 	}
@@ -121,7 +120,7 @@ type vp8Assembler struct {
 	open bool
 }
 
-func (a *vp8Assembler) push(p *rtp.Packet) ([]byte, bool, error) {
+func (a *vp8Assembler) push(p *webrtc.RtpPacket) ([]byte, bool, error) {
 	if len(p.Payload) < 1 {
 		return nil, false, nil
 	}
@@ -156,7 +155,7 @@ type vp9Assembler struct {
 	open bool
 }
 
-func (a *vp9Assembler) push(p *rtp.Packet) ([]byte, bool, error) {
+func (a *vp9Assembler) push(p *webrtc.RtpPacket) ([]byte, bool, error) {
 	if len(p.Payload) < 1 {
 		return nil, false, nil
 	}

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/amarnathcjd/gortc/webrtc/rtcp"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
+	wutil "github.com/amarnathcjd/gortc/webrtc"
 )
 
 type BandwidthEstimate struct {
@@ -81,11 +81,11 @@ func (b *bweTracker) readLoop(sender *webrtc.RTPSender) {
 	}
 }
 
-func (b *bweTracker) consume(p rtcp.Packet) {
+func (b *bweTracker) consume(p wutil.RtcpPacket) {
 	switch m := p.(type) {
-	case *rtcp.ReceiverEstimatedMaximumBitrate:
+	case *wutil.RtcpReceiverEstimatedMaximumBitrate:
 		b.update(BandwidthEstimate{BitrateBps: uint64(m.Bitrate)})
-	case *rtcp.ReceiverReport:
+	case *wutil.RtcpReceiverReport:
 		if len(m.Reports) == 0 {
 			return
 		}

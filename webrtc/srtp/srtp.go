@@ -6,6 +6,7 @@
 package srtp
 
 import (
+	"github.com/amarnathcjd/gortc/webrtc"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -17,10 +18,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"github.com/amarnathcjd/gortc/webrtc/logging"
-	"github.com/amarnathcjd/gortc/webrtc/rtcp"
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
-	"github.com/amarnathcjd/gortc/webrtc/transport"
+
 	"net"
 	"slices"
 	"sync"
@@ -48,13 +46,13 @@ type srtpSSRCState struct {
 	ssrc                 uint32
 	rolloverHasProcessed bool
 	index                uint64
-	replayDetector       transport.ReplayDetector
+	replayDetector       webrtc.TransportReplayDetector
 }
 
 type srtcpSSRCState struct {
 	srtcpIndex     uint32
 	ssrc           uint32
-	replayDetector transport.ReplayDetector
+	replayDetector webrtc.TransportReplayDetector
 }
 
 type RCCMode int
@@ -83,8 +81,8 @@ type Context struct {
 	cipher                 srtpCipher
 	srtpSSRCStates         map[uint32]*srtpSSRCState
 	srtcpSSRCStates        map[uint32]*srtcpSSRCState
-	newSRTCPReplayDetector func() transport.ReplayDetector
-	newSRTPReplayDetector  func() transport.ReplayDetector
+	newSRTCPReplayDetector func() webrtc.TransportReplayDetector
+	newSRTPReplayDetector  func() webrtc.TransportReplayDetector
 	profile                ProtectionProfile
 	sendMKI                []byte
 	mkis                   map[string]srtpCipher
@@ -422,7 +420,7 @@ func xorBytesCTR(block cipher.Block, iv []byte, dst, src []byte) error {
 	for i < len(src) {
 		block.Encrypt(stream, ctr)
 		incrementCTR(ctr)
-		n := transport.XorBytes(dst[i:], src[i:], stream)
+		n := webrtc.TransportXorBytes(dst[i:], src[i:], stream)
 		if n == 0 {
 			break
 		}
@@ -589,8 +587,8 @@ type ContextOption func(*Context) error
 
 func SRTPReplayProtection(windowSize uint) ContextOption {
 	return func(c *Context) error {
-		c.newSRTPReplayDetector = func() transport.ReplayDetector {
-			return transport.NewReplayDetector(windowSize, maxROC<<16|maxSequenceNumber)
+		c.newSRTPReplayDetector = func() webrtc.TransportReplayDetector {
+			return webrtc.TransportNewReplayDetector(windowSize, maxROC<<16|maxSequenceNumber)
 		}
 
 		return nil
@@ -599,8 +597,8 @@ func SRTPReplayProtection(windowSize uint) ContextOption {
 
 func SRTCPReplayProtection(windowSize uint) ContextOption {
 	return func(c *Context) error {
-		c.newSRTCPReplayDetector = func() transport.ReplayDetector {
-			return transport.NewReplayDetector(windowSize, maxSRTCPIndex)
+		c.newSRTCPReplayDetector = func() webrtc.TransportReplayDetector {
+			return webrtc.TransportNewReplayDetector(windowSize, maxSRTCPIndex)
 		}
 
 		return nil
@@ -609,7 +607,7 @@ func SRTCPReplayProtection(windowSize uint) ContextOption {
 
 func SRTPNoReplayProtection() ContextOption {
 	return func(c *Context) error {
-		c.newSRTPReplayDetector = func() transport.ReplayDetector {
+		c.newSRTPReplayDetector = func() webrtc.TransportReplayDetector {
 			return &nopReplayDetector{}
 		}
 
@@ -619,7 +617,7 @@ func SRTPNoReplayProtection() ContextOption {
 
 func SRTCPNoReplayProtection() ContextOption {
 	return func(c *Context) error {
-		c.newSRTCPReplayDetector = func() transport.ReplayDetector {
+		c.newSRTCPReplayDetector = func() webrtc.TransportReplayDetector {
 			return &nopReplayDetector{}
 		}
 
@@ -807,16 +805,16 @@ type session struct {
 	readStreamsClosed           bool
 	readStreams                 map[uint32]readStream
 	readStreamsLock             sync.Mutex
-	log                         logging.LeveledLogger
-	bufferFactory               func(packetType transport.BufferPacketType, ssrc uint32) io.ReadWriteCloser
+	log                         webrtc.LeveledLogger
+	bufferFactory               func(packetType webrtc.TransportBufferPacketType, ssrc uint32) io.ReadWriteCloser
 	nextConn                    net.Conn
 }
 
 type Config struct {
 	Keys                        SessionKeys
 	Profile                     ProtectionProfile
-	BufferFactory               func(packetType transport.BufferPacketType, ssrc uint32) io.ReadWriteCloser
-	LoggerFactory               logging.LoggerFactory
+	BufferFactory               func(packetType webrtc.TransportBufferPacketType, ssrc uint32) io.ReadWriteCloser
+	LoggerFactory               webrtc.LoggerFactory
 	AcceptStreamTimeout         time.Time
 	LocalOptions, RemoteOptions []ContextOption
 }
@@ -944,7 +942,7 @@ func NewSessionSRTCP(conn net.Conn, config *Config) (*SessionSRTCP, error) {
 
 	loggerFactory := config.LoggerFactory
 	if loggerFactory == nil {
-		loggerFactory = logging.NewDefaultLoggerFactory()
+		loggerFactory = webrtc.NewDefaultLoggerFactory()
 	}
 
 	localOpts := append(
@@ -1043,7 +1041,7 @@ func (s *SessionSRTCP) setWriteDeadline(t time.Time) error {
 	return s.session.nextConn.SetWriteDeadline(t)
 }
 
-func destinationSSRC(pkts []rtcp.Packet) []uint32 {
+func destinationSSRC(pkts []webrtc.RtcpPacket) []uint32 {
 	ssrcSet := make(map[uint32]struct{})
 	for _, p := range pkts {
 		for _, ssrc := range p.DestinationSSRC() {
@@ -1065,7 +1063,7 @@ func (s *SessionSRTCP) decrypt(buf []byte) error {
 		return err
 	}
 
-	pkt, err := rtcp.Unmarshal(decrypted)
+	pkt, err := webrtc.RtcpUnmarshal(decrypted)
 	if err != nil {
 		return err
 	}
@@ -1111,7 +1109,7 @@ func NewSessionSRTP(conn net.Conn, config *Config) (*SessionSRTP, error) {
 
 	loggerFactory := config.LoggerFactory
 	if loggerFactory == nil {
-		loggerFactory = logging.NewDefaultLoggerFactory()
+		loggerFactory = webrtc.NewDefaultLoggerFactory()
 	}
 
 	localOpts := append(
@@ -1188,13 +1186,13 @@ func (s *SessionSRTP) Close() error {
 }
 
 func (s *SessionSRTP) write(b []byte) (int, error) {
-	packet := &rtp.Packet{}
+	packet := &webrtc.RtpPacket{}
 
 	if err := packet.Unmarshal(b); err != nil {
 		return 0, err
 	}
 
-	return s.writeRTP(&packet.Header, packet.Payload)
+	return s.writeRTP(&packet.RtpHeader, packet.Payload)
 }
 
 var bufferpool = sync.Pool{
@@ -1203,7 +1201,7 @@ var bufferpool = sync.Pool{
 	},
 }
 
-func (s *SessionSRTP) writeRTP(header *rtp.Header, payload []byte) (int, error) {
+func (s *SessionSRTP) writeRTP(header *webrtc.RtpHeader, payload []byte) (int, error) {
 	if _, ok := <-s.session.started; ok {
 		return 0, errStartedChannelUsedIncorrectly
 	}
@@ -1212,12 +1210,12 @@ func (s *SessionSRTP) writeRTP(header *rtp.Header, payload []byte) (int, error) 
 	defer bufferpool.Put(ibuf)
 
 	buf := ibuf.([]byte)
-	headerLen, marshalSize := rtp.HeaderAndPacketMarshalSize(header, payload)
+	headerLen, marshalSize := webrtc.RtpHeaderAndPacketMarshalSize(header, payload)
 	if len(buf) < marshalSize+20 {
 
 		buf = make([]byte, marshalSize+20)
 	}
-	_, err := rtp.MarshalPacketTo(buf, header, payload)
+	_, err := webrtc.RtpMarshalPacketTo(buf, header, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -1238,7 +1236,7 @@ func (s *SessionSRTP) setWriteDeadline(t time.Time) error {
 }
 
 func (s *SessionSRTP) decrypt(buf []byte) error {
-	header := &rtp.Header{}
+	header := &webrtc.RtpHeader{}
 	headerLen, err := header.Unmarshal(buf)
 	if err != nil {
 		return err
@@ -1324,9 +1322,9 @@ func (c *Context) decryptRTCP(dst, encrypted []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (c *Context) DecryptRTCP(dst, encrypted []byte, header *rtcp.Header) ([]byte, error) {
+func (c *Context) DecryptRTCP(dst, encrypted []byte, header *webrtc.RtcpHeader) ([]byte, error) {
 	if header == nil {
-		header = &rtcp.Header{}
+		header = &webrtc.RtcpHeader{}
 	}
 
 	if err := header.Unmarshal(encrypted); err != nil {
@@ -1354,9 +1352,9 @@ func (c *Context) encryptRTCP(dst, decrypted []byte) ([]byte, error) {
 	return c.cipher.encryptRTCP(dst, decrypted, ssrcState.srtcpIndex, ssrc)
 }
 
-func (c *Context) EncryptRTCP(dst, decrypted []byte, header *rtcp.Header) ([]byte, error) {
+func (c *Context) EncryptRTCP(dst, decrypted []byte, header *webrtc.RtcpHeader) ([]byte, error) {
 	if header == nil {
-		header = &rtcp.Header{}
+		header = &webrtc.RtcpHeader{}
 	}
 
 	if err := header.Unmarshal(decrypted); err != nil {
@@ -1366,7 +1364,7 @@ func (c *Context) EncryptRTCP(dst, decrypted []byte, header *rtcp.Header) ([]byt
 	return c.encryptRTCP(dst, decrypted)
 }
 
-func (c *Context) decryptRTP(dst, ciphertext []byte, header *rtp.Header, headerLen int) ([]byte, error) {
+func (c *Context) decryptRTP(dst, ciphertext []byte, header *webrtc.RtpHeader, headerLen int) ([]byte, error) {
 	authTagLen, err := c.cipher.AuthTagRTPLen()
 	if err != nil {
 		return nil, err
@@ -1435,9 +1433,9 @@ func (c *Context) decryptRTP(dst, ciphertext []byte, header *rtp.Header, headerL
 	return dst, nil
 }
 
-func (c *Context) DecryptRTP(dst, encrypted []byte, header *rtp.Header) ([]byte, error) {
+func (c *Context) DecryptRTP(dst, encrypted []byte, header *webrtc.RtpHeader) ([]byte, error) {
 	if header == nil {
-		header = &rtp.Header{}
+		header = &webrtc.RtpHeader{}
 	}
 
 	headerLen, err := header.Unmarshal(encrypted)
@@ -1448,9 +1446,9 @@ func (c *Context) DecryptRTP(dst, encrypted []byte, header *rtp.Header) ([]byte,
 	return c.decryptRTP(dst, encrypted, header, headerLen)
 }
 
-func (c *Context) EncryptRTP(dst []byte, plaintext []byte, header *rtp.Header) ([]byte, error) {
+func (c *Context) EncryptRTP(dst []byte, plaintext []byte, header *webrtc.RtpHeader) ([]byte, error) {
 	if header == nil {
-		header = &rtp.Header{}
+		header = &webrtc.RtpHeader{}
 	}
 
 	headerLen, err := header.Unmarshal(plaintext)
@@ -1461,12 +1459,12 @@ func (c *Context) EncryptRTP(dst []byte, plaintext []byte, header *rtp.Header) (
 	return c.encryptRTP(dst, header, headerLen, plaintext)
 }
 
-func (c *Context) encryptRTP(dst []byte, header *rtp.Header, headerLen int, plaintext []byte,
+func (c *Context) encryptRTP(dst []byte, header *webrtc.RtpHeader, headerLen int, plaintext []byte,
 ) (ciphertext []byte, err error) {
 
 	if c.cryptexMode != CryptexModeDisabled && header.Extension &&
-		header.ExtensionProfile != rtp.ExtensionProfileOneByte &&
-		header.ExtensionProfile != rtp.ExtensionProfileTwoByte {
+		header.ExtensionProfile != webrtc.RtpExtensionProfileOneByte &&
+		header.ExtensionProfile != webrtc.RtpExtensionProfileTwoByte {
 		return nil, errUnsupportedHeaderExtension
 	}
 
@@ -1483,7 +1481,7 @@ func (c *Context) encryptRTP(dst []byte, header *rtp.Header, headerLen int, plai
 	return c.cipher.encryptRTP(dst, header, headerLen, plaintext, roc, rocInPacket)
 }
 
-func (c *Context) hasROCInPacket(header *rtp.Header, authTagLen int) (bool, int) {
+func (c *Context) hasROCInPacket(header *webrtc.RtpHeader, authTagLen int) (bool, int) {
 	hasRocInPacket := false
 	switch c.rccMode {
 	case RCCMode2:
@@ -1501,7 +1499,7 @@ func (c *Context) hasROCInPacket(header *rtp.Header, authTagLen int) (bool, int)
 	return hasRocInPacket, authTagLen
 }
 
-func (c *Context) checkCryptex(header *rtp.Header) error {
+func (c *Context) checkCryptex(header *webrtc.RtpHeader) error {
 	switch c.cryptexMode {
 	case CryptexModeDisabled:
 		if isCryptexPacket(header) {
@@ -1522,9 +1520,9 @@ type srtpCipher interface {
 	AuthTagRTCPLen() (int, error)
 	AEADAuthTagLen() (int, error)
 	getRTCPIndex([]byte) uint32
-	encryptRTP([]byte, *rtp.Header, int, []byte, uint32, bool) ([]byte, error)
+	encryptRTP([]byte, *webrtc.RtpHeader, int, []byte, uint32, bool) ([]byte, error)
 	encryptRTCP([]byte, []byte, uint32, uint32) ([]byte, error)
-	decryptRTP([]byte, []byte, *rtp.Header, int, uint32, bool) ([]byte, error)
+	decryptRTP([]byte, []byte, *webrtc.RtpHeader, int, uint32, bool) ([]byte, error)
 	decryptRTCP([]byte, []byte, uint32, uint32) ([]byte, error)
 }
 
@@ -1600,8 +1598,7 @@ func newSrtpCipherAeadAesGcm(
 
 func (s *srtpCipherAeadAesGcm) encryptRTP(
 	dst []byte,
-	header *rtp.Header,
-	headerLen int,
+	header *webrtc.RtpHeader, headerLen int,
 	plaintext []byte,
 	roc uint32,
 	rocInAuthTag bool,
@@ -1640,7 +1637,7 @@ func (s *srtpCipherAeadAesGcm) encryptRTP(
 	return dst, nil
 }
 
-func (s *srtpCipherAeadAesGcm) doEncryptRTP(dst []byte, header *rtp.Header, headerLen int, plaintext []byte, roc uint32,
+func (s *srtpCipherAeadAesGcm) doEncryptRTP(dst []byte, header *webrtc.RtpHeader, headerLen int, plaintext []byte, roc uint32,
 	rocInAuthTag bool, sameBuffer bool, payloadLen int, authPartLen int,
 ) error {
 	iv := s.rtpInitializationVector(header, roc)
@@ -1683,8 +1680,7 @@ func (s *srtpCipherAeadAesGcm) doEncryptRTP(dst []byte, header *rtp.Header, head
 
 func (s *srtpCipherAeadAesGcm) decryptRTP(
 	dst, ciphertext []byte,
-	header *rtp.Header,
-	headerLen int,
+	header *webrtc.RtpHeader, headerLen int,
 	roc uint32,
 	rocInAuthTag bool,
 ) ([]byte, error) {
@@ -1715,7 +1711,7 @@ func (s *srtpCipherAeadAesGcm) decryptRTP(
 	return dst, nil
 }
 
-func (s *srtpCipherAeadAesGcm) doDecryptRTP(dst, ciphertext []byte, header *rtp.Header, headerLen int, roc uint32,
+func (s *srtpCipherAeadAesGcm) doDecryptRTP(dst, ciphertext []byte, header *webrtc.RtpHeader, headerLen int, roc uint32,
 	sameBuffer bool, nEnd int, authTagLen int,
 ) error {
 	iv := s.rtpInitializationVector(header, roc)
@@ -1842,7 +1838,7 @@ func (s *srtpCipherAeadAesGcm) decryptRTCP(dst, encrypted []byte, srtcpIndex, ss
 	return dst, nil
 }
 
-func (s *srtpCipherAeadAesGcm) rtpInitializationVector(header *rtp.Header, roc uint32) [12]byte {
+func (s *srtpCipherAeadAesGcm) rtpInitializationVector(header *webrtc.RtpHeader, roc uint32) [12]byte {
 	var iv [12]byte
 	binary.BigEndian.PutUint32(iv[2:], header.SSRC)
 	binary.BigEndian.PutUint32(iv[6:], roc)
@@ -1968,8 +1964,7 @@ func newSrtpCipherAesCmHmacSha1(
 
 func (s *srtpCipherAesCmHmacSha1) encryptRTP(
 	dst []byte,
-	header *rtp.Header,
-	headerLen int,
+	header *webrtc.RtpHeader, headerLen int,
 	plaintext []byte,
 	roc uint32,
 	rocInAuthTag bool,
@@ -2005,7 +2000,7 @@ func (s *srtpCipherAesCmHmacSha1) encryptRTP(
 	return dst, nil
 }
 
-func (s *srtpCipherAesCmHmacSha1) doEncryptRTP(dst []byte, header *rtp.Header, headerLen int, plaintext []byte,
+func (s *srtpCipherAesCmHmacSha1) doEncryptRTP(dst []byte, header *webrtc.RtpHeader, headerLen int, plaintext []byte,
 	roc uint32, rocInAuthTag bool, sameBuffer bool, payloadLen int,
 ) error {
 	encrypt := func(dst, plaintext []byte, headerLen int) error {
@@ -2051,8 +2046,7 @@ func (s *srtpCipherAesCmHmacSha1) doEncryptRTP(dst []byte, header *rtp.Header, h
 
 func (s *srtpCipherAesCmHmacSha1) decryptRTP(
 	dst, ciphertext []byte,
-	header *rtp.Header,
-	headerLen int,
+	header *webrtc.RtpHeader, headerLen int,
 	roc uint32,
 	rocInAuthTag bool,
 ) ([]byte, error) {
@@ -2084,7 +2078,7 @@ func (s *srtpCipherAesCmHmacSha1) decryptRTP(
 	return dst, nil
 }
 
-func (s *srtpCipherAesCmHmacSha1) doDecryptRTP(dst, ciphertext []byte, header *rtp.Header, headerLen int, roc uint32,
+func (s *srtpCipherAesCmHmacSha1) doDecryptRTP(dst, ciphertext []byte, header *webrtc.RtpHeader, headerLen int, roc uint32,
 	sameBuffer bool,
 ) error {
 	decrypt := func(dst, ciphertext []byte, headerLen int) error {
@@ -2264,12 +2258,12 @@ const (
 	extensionHeaderSize = 4
 )
 
-func isCryptexPacket(header *rtp.Header) bool {
+func isCryptexPacket(header *webrtc.RtpHeader) bool {
 	return header.Extension &&
-		(header.ExtensionProfile == rtp.CryptexProfileOneByte || header.ExtensionProfile == rtp.CryptexProfileTwoByte)
+		(header.ExtensionProfile == webrtc.RtpCryptexProfileOneByte || header.ExtensionProfile == webrtc.RtpCryptexProfileTwoByte)
 }
 
-func moveHeaderExtensionBeforeCSRCs(header *rtp.Header, buf []byte) {
+func moveHeaderExtensionBeforeCSRCs(header *webrtc.RtpHeader, buf []byte) {
 	if len(header.CSRC) == 0 || !header.Extension {
 		return
 	}
@@ -2281,7 +2275,7 @@ func moveHeaderExtensionBeforeCSRCs(header *rtp.Header, buf []byte) {
 	copy(buf[minSrtpHeaderSize:], tmp[:])
 }
 
-func moveCSRCsBeforeHeaderExtension(header *rtp.Header, buf []byte) {
+func moveCSRCsBeforeHeaderExtension(header *webrtc.RtpHeader, buf []byte) {
 	if len(header.CSRC) == 0 || !header.Extension {
 		return
 	}
@@ -2294,15 +2288,14 @@ func moveCSRCsBeforeHeaderExtension(header *rtp.Header, buf []byte) {
 	copy(buf[minSrtpHeaderSize+csrcLen:], tmp[:])
 }
 
-func encryptCryptexRTP(dst, plaintext []byte, sameBuffer bool, header *rtp.Header,
-	encrypt func(dst, plaintext []byte, headerLen int) error,
+func encryptCryptexRTP(dst, plaintext []byte, sameBuffer bool, header *webrtc.RtpHeader, encrypt func(dst, plaintext []byte, headerLen int) error,
 ) error {
 	moveHeaderExtensionBeforeCSRCs(header, plaintext)
 
-	if header.ExtensionProfile == rtp.ExtensionProfileOneByte {
-		binary.BigEndian.PutUint16(plaintext[minSrtpHeaderSize:], rtp.CryptexProfileOneByte)
+	if header.ExtensionProfile == webrtc.RtpExtensionProfileOneByte {
+		binary.BigEndian.PutUint16(plaintext[minSrtpHeaderSize:], webrtc.RtpCryptexProfileOneByte)
 	} else {
-		binary.BigEndian.PutUint16(plaintext[minSrtpHeaderSize:], rtp.CryptexProfileTwoByte)
+		binary.BigEndian.PutUint16(plaintext[minSrtpHeaderSize:], webrtc.RtpCryptexProfileTwoByte)
 	}
 
 	err := encrypt(dst, plaintext, minSrtpHeaderSize+extensionHeaderSize)
@@ -2323,7 +2316,7 @@ func encryptCryptexRTP(dst, plaintext []byte, sameBuffer bool, header *rtp.Heade
 	return nil
 }
 
-func decryptCryptexRTP(dst, ciphertext []byte, sameBuffer bool, header *rtp.Header, headerLen int,
+func decryptCryptexRTP(dst, ciphertext []byte, sameBuffer bool, header *webrtc.RtpHeader, headerLen int,
 	decrypt func(dst, ciphertext []byte, headerLen int) error,
 ) error {
 	moveHeaderExtensionBeforeCSRCs(header, ciphertext)
@@ -2341,10 +2334,10 @@ func decryptCryptexRTP(dst, ciphertext []byte, sameBuffer bool, header *rtp.Head
 	moveCSRCsBeforeHeaderExtension(header, ciphertext)
 
 	offset := minSrtpHeaderSize + len(header.CSRC)*4
-	if header.ExtensionProfile == rtp.CryptexProfileOneByte {
-		binary.BigEndian.PutUint16(dst[offset:], rtp.ExtensionProfileOneByte)
+	if header.ExtensionProfile == webrtc.RtpCryptexProfileOneByte {
+		binary.BigEndian.PutUint16(dst[offset:], webrtc.RtpExtensionProfileOneByte)
 	} else {
-		binary.BigEndian.PutUint16(dst[offset:], rtp.ExtensionProfileTwoByte)
+		binary.BigEndian.PutUint16(dst[offset:], webrtc.RtpExtensionProfileTwoByte)
 	}
 
 	n, err := header.Unmarshal(dst)
@@ -2358,17 +2351,17 @@ func decryptCryptexRTP(dst, ciphertext []byte, sameBuffer bool, header *rtp.Head
 	return nil
 }
 
-func needsEmptyExtensionHeader(useCryptex bool, header *rtp.Header) bool {
+func needsEmptyExtensionHeader(useCryptex bool, header *webrtc.RtpHeader) bool {
 	return useCryptex && len(header.CSRC) > 0 && !header.Extension
 }
 
-func insertEmptyExtensionHeader(dst, plaintext []byte, sameBuffer bool, header *rtp.Header) []byte {
+func insertEmptyExtensionHeader(dst, plaintext []byte, sameBuffer bool, header *webrtc.RtpHeader) []byte {
 	header.Extension = true
-	header.ExtensionProfile = rtp.ExtensionProfileOneByte
+	header.ExtensionProfile = webrtc.RtpExtensionProfileOneByte
 	header.Extensions = nil
 
 	var emptyExtHdr [extensionHeaderSize]byte
-	binary.BigEndian.PutUint16(emptyExtHdr[:], rtp.ExtensionProfileOneByte)
+	binary.BigEndian.PutUint16(emptyExtHdr[:], webrtc.RtpExtensionProfileOneByte)
 
 	offset := minSrtpHeaderSize + len(header.CSRC)*4
 	plaintextLen := len(plaintext)
@@ -2409,7 +2402,7 @@ type ReadStreamSRTCP struct {
 func (r *ReadStreamSRTCP) write(buf []byte) (n int, err error) {
 	n, err = r.buffer.Write(buf)
 
-	if errors.Is(err, transport.ErrFull) {
+	if errors.Is(err, webrtc.TransportErrFull) {
 
 		return len(buf), nil
 	}
@@ -2421,13 +2414,13 @@ func newReadStreamSRTCP() readStream {
 	return &ReadStreamSRTCP{}
 }
 
-func (r *ReadStreamSRTCP) ReadRTCP(buf []byte) (int, *rtcp.Header, error) {
+func (r *ReadStreamSRTCP) ReadRTCP(buf []byte) (int, *webrtc.RtcpHeader, error) {
 	n, err := r.Read(buf)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	header := &rtcp.Header{}
+	header := &webrtc.RtcpHeader{}
 	err = header.Unmarshal(buf[:n])
 	if err != nil {
 		return 0, nil, err
@@ -2490,10 +2483,10 @@ func (r *ReadStreamSRTCP) init(child streamSession, ssrc uint32) error {
 	r.isClosed = make(chan bool)
 
 	if r.session.bufferFactory != nil {
-		r.buffer = r.session.bufferFactory(transport.RTCPBufferPacket, ssrc)
+		r.buffer = r.session.bufferFactory(webrtc.TransportRTCPBufferPacket, ssrc)
 	} else {
 
-		buff := transport.NewBuffer()
+		buff := webrtc.TransportNewBuffer()
 		buff.SetLimitSize(srtcpBufferSize)
 		r.buffer = buff
 	}
@@ -2509,7 +2502,7 @@ type WriteStreamSRTCP struct {
 	session *SessionSRTCP
 }
 
-func (w *WriteStreamSRTCP) WriteRTCP(header *rtcp.Header, payload []byte) (int, error) {
+func (w *WriteStreamSRTCP) WriteRTCP(header *webrtc.RtcpHeader, payload []byte) (int, error) {
 	headerRaw, err := header.Marshal()
 	if err != nil {
 		return 0, err
@@ -2560,9 +2553,9 @@ func (r *ReadStreamSRTP) init(child streamSession, ssrc uint32) error {
 	r.isClosed = make(chan bool)
 
 	if r.session.bufferFactory != nil {
-		r.buffer = r.session.bufferFactory(transport.RTPBufferPacket, ssrc)
+		r.buffer = r.session.bufferFactory(webrtc.TransportRTPBufferPacket, ssrc)
 	} else {
-		buff := transport.NewBuffer()
+		buff := webrtc.TransportNewBuffer()
 		buff.SetLimitSize(srtpBufferSize)
 		r.buffer = buff
 	}
@@ -2573,7 +2566,7 @@ func (r *ReadStreamSRTP) init(child streamSession, ssrc uint32) error {
 func (r *ReadStreamSRTP) write(buf []byte) (n int, err error) {
 	n, err = r.buffer.Write(buf)
 
-	if errors.Is(err, transport.ErrFull) {
+	if errors.Is(err, webrtc.TransportErrFull) {
 
 		return len(buf), nil
 	}
@@ -2606,13 +2599,13 @@ func (r *ReadStreamSRTP) Read(buf []byte) (int, error) {
 	return r.buffer.Read(buf)
 }
 
-func (r *ReadStreamSRTP) ReadRTP(buf []byte) (int, *rtp.Header, error) {
+func (r *ReadStreamSRTP) ReadRTP(buf []byte) (int, *webrtc.RtpHeader, error) {
 	n, err := r.Read(buf)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	header := &rtp.Header{}
+	header := &webrtc.RtpHeader{}
 
 	_, err = header.Unmarshal(buf[:n])
 	if err != nil {
@@ -2663,7 +2656,7 @@ type WriteStreamSRTP struct {
 	session *SessionSRTP
 }
 
-func (w *WriteStreamSRTP) WriteRTP(header *rtp.Header, payload []byte) (int, error) {
+func (w *WriteStreamSRTP) WriteRTP(header *webrtc.RtpHeader, payload []byte) (int, error) {
 	return w.session.writeRTP(header, payload)
 }
 

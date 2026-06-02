@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
+	"github.com/amarnathcjd/gortc/webrtc"
 )
 
 // RTPDump logs outgoing packets at debug level.
@@ -33,7 +33,7 @@ type rtpDump struct {
 
 func (d *rtpDump) BindLocalStream(info *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
 	d.log.Debugf("bind ssrc=%d pt=%d mime=%s clock=%d", info.SSRC, info.PayloadType, info.MimeType, info.ClockRate)
-	return interceptor.RTPWriterFunc(func(h *rtp.Header, payload []byte, a interceptor.Attributes) (int, error) {
+	return interceptor.RTPWriterFunc(func(h *webrtc.RtpHeader, payload []byte, a interceptor.Attributes) (int, error) {
 		if n := d.n.Add(1); n <= 20 || n%100 == 0 {
 			d.log.Debugf("tx #%d ssrc=%d pt=%d seq=%d ts=%d marker=%t len=%d", n, h.SSRC, h.PayloadType, h.SequenceNumber, h.Timestamp, h.Marker, len(payload))
 		}

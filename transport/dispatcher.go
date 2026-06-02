@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
+	wutil "github.com/amarnathcjd/gortc/webrtc"
 )
 
 type Dispatcher struct {
-	audioCh chan *rtp.Packet
-	videoCh chan *rtp.Packet
+	audioCh chan *wutil.RtpPacket
+	videoCh chan *wutil.RtpPacket
 	stop    chan struct{}
 	wg      sync.WaitGroup
 
@@ -25,8 +25,8 @@ type Dispatcher struct {
 
 func NewDispatcher(audio, video *webrtc.TrackLocalStaticRTP) *Dispatcher {
 	return &Dispatcher{
-		audioCh: make(chan *rtp.Packet, 64),
-		videoCh: make(chan *rtp.Packet, 2048),
+		audioCh: make(chan *wutil.RtpPacket, 64),
+		videoCh: make(chan *wutil.RtpPacket, 2048),
 		stop:    make(chan struct{}),
 		audio:   audio,
 		video:   video,
@@ -43,14 +43,14 @@ func (d *Dispatcher) Stop() {
 	d.wg.Wait()
 }
 
-func (d *Dispatcher) SendAudio(p *rtp.Packet) {
+func (d *Dispatcher) SendAudio(p *wutil.RtpPacket) {
 	select {
 	case d.audioCh <- p:
 	case <-d.stop:
 	}
 }
 
-func (d *Dispatcher) SendVideo(p *rtp.Packet) {
+func (d *Dispatcher) SendVideo(p *wutil.RtpPacket) {
 	select {
 	case d.videoCh <- p:
 	case <-d.stop:

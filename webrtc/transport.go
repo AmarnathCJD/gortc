@@ -3,7 +3,7 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-package transport
+package webrtc
 
 import (
 	"context"
@@ -19,43 +19,38 @@ import (
 	"github.com/wlynxg/anet"
 )
 
-// -----------------------------------------------------------------------------
-// net.go (base transport package)
-// -----------------------------------------------------------------------------
-
 var (
-	ErrNoAddressAssigned = errors.New("no address assigned")
-
-	ErrInterfaceNotFound = errors.New("interface not found")
+	TransportErrNoAddressAssigned = errors.New("no address assigned")
+	TransportErrInterfaceNotFound = errors.New("interface not found")
 )
 
-type Net interface {
+type TransportNet interface {
 	ListenPacket(network string, address string) (net.PacketConn, error)
-	ListenUDP(network string, locAddr *net.UDPAddr) (UDPConn, error)
-	ListenTCP(network string, laddr *net.TCPAddr) (TCPListener, error)
+	ListenUDP(network string, locAddr *net.UDPAddr) (TransportUDPConn, error)
+	ListenTCP(network string, laddr *net.TCPAddr) (TransportTCPListener, error)
 	Dial(network, address string) (net.Conn, error)
-	DialUDP(network string, laddr, raddr *net.UDPAddr) (UDPConn, error)
-	DialTCP(network string, laddr, raddr *net.TCPAddr) (TCPConn, error)
+	DialUDP(network string, laddr, raddr *net.UDPAddr) (TransportUDPConn, error)
+	DialTCP(network string, laddr, raddr *net.TCPAddr) (TransportTCPConn, error)
 	ResolveIPAddr(network, address string) (*net.IPAddr, error)
 	ResolveUDPAddr(network, address string) (*net.UDPAddr, error)
 	ResolveTCPAddr(network, address string) (*net.TCPAddr, error)
-	Interfaces() ([]*Interface, error)
-	InterfaceByIndex(index int) (*Interface, error)
-	InterfaceByName(name string) (*Interface, error)
-	CreateDialer(dialer *net.Dialer) Dialer
-	CreateListenConfig(listenerConfig *net.ListenConfig) ListenConfig
+	Interfaces() ([]*TransportInterface, error)
+	InterfaceByIndex(index int) (*TransportInterface, error)
+	InterfaceByName(name string) (*TransportInterface, error)
+	CreateDialer(dialer *net.Dialer) TransportDialer
+	CreateListenConfig(listenerConfig *net.ListenConfig) TransportListenConfig
 }
 
-type Dialer interface {
+type TransportDialer interface {
 	Dial(network, address string) (net.Conn, error)
 }
 
-type ListenConfig interface {
+type TransportListenConfig interface {
 	Listen(ctx context.Context, network, address string) (net.Listener, error)
 	ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error)
 }
 
-type UDPConn interface {
+type TransportUDPConn interface {
 	Close() error
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
@@ -74,7 +69,7 @@ type UDPConn interface {
 	WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (n, oobn int, err error)
 }
 
-type TCPConn interface {
+type TransportTCPConn interface {
 	net.Conn
 	CloseRead() error
 	CloseWrite() error
@@ -87,106 +82,102 @@ type TCPConn interface {
 	SetReadBuffer(bytes int) error
 }
 
-type TCPListener interface {
+type TransportTCPListener interface {
 	net.Listener
-	AcceptTCP() (TCPConn, error)
+	AcceptTCP() (TransportTCPConn, error)
 	SetDeadline(t time.Time) error
 }
 
-type Interface struct {
+type TransportInterface struct {
 	net.Interface
 	addrs []net.Addr
 }
 
-func NewInterface(ifc net.Interface) *Interface {
-	return &Interface{
+func TransportNewInterface(ifc net.Interface) *TransportInterface {
+	return &TransportInterface{
 		Interface: ifc,
 		addrs:     nil,
 	}
 }
 
-func (ifc *Interface) AddAddress(addr net.Addr) {
+func (ifc *TransportInterface) AddAddress(addr net.Addr) {
 	ifc.addrs = append(ifc.addrs, addr)
 }
 
-func (ifc *Interface) Addrs() ([]net.Addr, error) {
+func (ifc *TransportInterface) Addrs() ([]net.Addr, error) {
 	if len(ifc.addrs) == 0 {
-		return nil, ErrNoAddressAssigned
+		return nil, TransportErrNoAddressAssigned
 	}
 
 	return ifc.addrs, nil
 }
 
-// -----------------------------------------------------------------------------
-// deadline (was package deadline)
-// -----------------------------------------------------------------------------
-
-type deadlineState uint8
+type transportDeadlineState uint8
 
 const (
-	deadlineStopped deadlineState = iota
-	deadlineStarted
-	deadlineExceeded
+	transportDeadlineStopped transportDeadlineState = iota
+	transportDeadlineStarted
+	transportDeadlineExceeded
 )
 
-var _ context.Context = (*Deadline)(nil)
+var _ context.Context = (*TransportDeadline)(nil)
 
-type Deadline struct {
+type TransportDeadline struct {
 	mu       sync.RWMutex
-	timer    timer
+	timer    transportTimer
 	done     chan struct{}
 	deadline time.Time
-	state    deadlineState
+	state    transportDeadlineState
 	pending  uint8
 }
 
-func NewDeadline() *Deadline {
-	return &Deadline{
+func TransportNewDeadline() *TransportDeadline {
+	return &TransportDeadline{
 		done: make(chan struct{}),
 	}
 }
 
-func (d *Deadline) timeout() {
+func (d *TransportDeadline) timeout() {
 	d.mu.Lock()
-	if d.pending--; d.pending != 0 || d.state != deadlineStarted {
+	if d.pending--; d.pending != 0 || d.state != transportDeadlineStarted {
 		d.mu.Unlock()
 
 		return
 	}
 
-	d.state = deadlineExceeded
+	d.state = transportDeadlineExceeded
 	done := d.done
 	d.mu.Unlock()
 
 	close(done)
 }
 
-func (d *Deadline) Set(setTo time.Time) {
+func (d *TransportDeadline) Set(setTo time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.state == deadlineStarted && d.timer.Stop() {
+	if d.state == transportDeadlineStarted && d.timer.Stop() {
 		d.pending--
 	}
 
 	d.deadline = setTo
 	d.pending++
 
-	if d.state == deadlineExceeded {
+	if d.state == transportDeadlineExceeded {
 		d.done = make(chan struct{})
 	}
 
 	if setTo.IsZero() {
 		d.pending--
-		d.state = deadlineStopped
+		d.state = transportDeadlineStopped
 
 		return
 	}
 
 	if dur := time.Until(setTo); dur > 0 {
-		d.state = deadlineStarted
+		d.state = transportDeadlineStarted
 		if d.timer == nil {
-			d.timer = afterFunc(dur, d.timeout)
+			d.timer = transportAfterFunc(dur, d.timeout)
 		} else {
 			d.timer.Reset(dur)
 		}
@@ -195,28 +186,28 @@ func (d *Deadline) Set(setTo time.Time) {
 	}
 
 	d.pending--
-	d.state = deadlineExceeded
+	d.state = transportDeadlineExceeded
 	close(d.done)
 }
 
-func (d *Deadline) Done() <-chan struct{} {
+func (d *TransportDeadline) Done() <-chan struct{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	return d.done
 }
 
-func (d *Deadline) Err() error {
+func (d *TransportDeadline) Err() error {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	if d.state == deadlineExceeded {
+	if d.state == transportDeadlineExceeded {
 		return context.DeadlineExceeded
 	}
 
 	return nil
 }
 
-func (d *Deadline) Deadline() (time.Time, bool) {
+func (d *TransportDeadline) Deadline() (time.Time, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	if d.deadline.IsZero() {
@@ -226,44 +217,39 @@ func (d *Deadline) Deadline() (time.Time, bool) {
 	return d.deadline, true
 }
 
-func (d *Deadline) Value(any) any {
+func (d *TransportDeadline) Value(any) any {
 	return nil
 }
 
-type timer interface {
+type transportTimer interface {
 	Stop() bool
 	Reset(time.Duration) bool
 }
 
-func afterFunc(d time.Duration, f func()) timer {
+func transportAfterFunc(d time.Duration, f func()) transportTimer {
 	return time.AfterFunc(d, f)
 }
 
-// -----------------------------------------------------------------------------
-// netctx (was package netctx)
-// -----------------------------------------------------------------------------
+var TransportErrClosing = errors.New("use of closed network connection")
+var transportVeryOld = time.Unix(0, 1)
 
-var ErrClosing = errors.New("use of closed network connection")
-
-var veryOld = time.Unix(0, 1)
-
-type ReaderFrom interface {
+type TransportReaderFrom interface {
 	ReadFromContext(context.Context, []byte) (int, net.Addr, error)
 }
 
-type WriterTo interface {
+type TransportWriterTo interface {
 	WriteToContext(context.Context, []byte, net.Addr) (int, error)
 }
 
-type PacketConn interface {
-	ReaderFrom
-	WriterTo
+type TransportPacketConn interface {
+	TransportReaderFrom
+	TransportWriterTo
 	io.Closer
 	LocalAddr() net.Addr
 	Conn() net.PacketConn
 }
 
-type packetConn struct {
+type transportPacketConn struct {
 	nextConn  net.PacketConn
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -271,8 +257,8 @@ type packetConn struct {
 	writeMu   sync.Mutex
 }
 
-func NewPacketConn(pconn net.PacketConn) PacketConn {
-	p := &packetConn{
+func TransportNewPacketConn(pconn net.PacketConn) TransportPacketConn {
+	p := &transportPacketConn{
 		nextConn: pconn,
 		closed:   make(chan struct{}),
 	}
@@ -280,7 +266,7 @@ func NewPacketConn(pconn net.PacketConn) PacketConn {
 	return p
 }
 
-func (p *packetConn) ReadFromContext(ctx context.Context, b []byte) (int, net.Addr, error) {
+func (p *transportPacketConn) ReadFromContext(ctx context.Context, b []byte) (int, net.Addr, error) {
 	p.readMu.Lock()
 	defer p.readMu.Unlock()
 
@@ -299,7 +285,7 @@ func (p *packetConn) ReadFromContext(ctx context.Context, b []byte) (int, net.Ad
 		select {
 		case <-ctx.Done():
 
-			if err := p.nextConn.SetReadDeadline(veryOld); err != nil {
+			if err := p.nextConn.SetReadDeadline(transportVeryOld); err != nil {
 				errSetDeadline.Store(err)
 
 				return
@@ -326,13 +312,13 @@ func (p *packetConn) ReadFromContext(ctx context.Context, b []byte) (int, net.Ad
 	return n, raddr, err
 }
 
-func (p *packetConn) WriteToContext(ctx context.Context, b []byte, raddr net.Addr) (int, error) {
+func (p *transportPacketConn) WriteToContext(ctx context.Context, b []byte, raddr net.Addr) (int, error) {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
 
 	select {
 	case <-p.closed:
-		return 0, ErrClosing
+		return 0, TransportErrClosing
 	default:
 	}
 
@@ -345,7 +331,7 @@ func (p *packetConn) WriteToContext(ctx context.Context, b []byte, raddr net.Add
 		select {
 		case <-ctx.Done():
 
-			if err := p.nextConn.SetWriteDeadline(veryOld); err != nil {
+			if err := p.nextConn.SetWriteDeadline(transportVeryOld); err != nil {
 				errSetDeadline.Store(err)
 
 				return
@@ -372,7 +358,7 @@ func (p *packetConn) WriteToContext(ctx context.Context, b []byte, raddr net.Add
 	return n, err
 }
 
-func (p *packetConn) Close() error {
+func (p *transportPacketConn) Close() error {
 	err := p.nextConn.Close()
 	p.closeOnce.Do(func() {
 		p.writeMu.Lock()
@@ -385,71 +371,67 @@ func (p *packetConn) Close() error {
 	return err
 }
 
-func (p *packetConn) LocalAddr() net.Addr {
+func (p *transportPacketConn) LocalAddr() net.Addr {
 	return p.nextConn.LocalAddr()
 }
 
-func (p *packetConn) Conn() net.PacketConn {
+func (p *transportPacketConn) Conn() net.PacketConn {
 	return p.nextConn
 }
 
-// -----------------------------------------------------------------------------
-// packetio (was package packetio)
-// -----------------------------------------------------------------------------
-
-var errPacketTooBig = errors.New("packet too big")
+var transportErrPacketTooBig = errors.New("packet too big")
 
 var (
-	ErrFull = errors.New("packetio.Buffer is full, discarding write")
+	TransportErrFull = errors.New("packetio.Buffer is full, discarding write")
 
-	ErrTimeout = errors.New("i/o timeout")
+	TransportErrTimeout = errors.New("i/o timeout")
 )
 
-type netError struct {
+type transportNetError struct {
 	error
 	timeout, temporary bool
 }
 
-func (e *netError) Timeout() bool {
+func (e *transportNetError) Timeout() bool {
 	return e.timeout
 }
 
-func (e *netError) Temporary() bool {
+func (e *transportNetError) Temporary() bool {
 	return e.temporary
 }
 
-type BufferPacketType int
+type TransportBufferPacketType int
 
 const (
-	RTPBufferPacket BufferPacketType = 1
+	TransportRTPBufferPacket TransportBufferPacketType = 1
 
-	RTCPBufferPacket BufferPacketType = 2
+	TransportRTCPBufferPacket TransportBufferPacketType = 2
 )
 
-type Buffer struct {
+type TransportBuffer struct {
 	mutex        sync.Mutex
 	data         []byte
 	head, tail   int
 	notify       chan struct{}
 	closed       bool
 	limitSize    int
-	readDeadline *Deadline
+	readDeadline *TransportDeadline
 }
 
 const (
-	minSize    = 2048
-	cutoffSize = 128 * 1024
-	maxSize    = 4 * 1024 * 1024
+	transportMinSize    = 2048
+	transportCutoffSize = 128 * 1024
+	transportMaxSize    = 4 * 1024 * 1024
 )
 
-func NewBuffer() *Buffer {
-	return &Buffer{
+func TransportNewBuffer() *TransportBuffer {
+	return &TransportBuffer{
 		notify:       make(chan struct{}, 1),
-		readDeadline: NewDeadline(),
+		readDeadline: TransportNewDeadline(),
 	}
 }
 
-func (b *Buffer) available(size int) bool {
+func (b *TransportBuffer) available(size int) bool {
 	available := b.head - b.tail
 	if available <= 0 {
 		available += len(b.data)
@@ -462,18 +444,18 @@ func (b *Buffer) available(size int) bool {
 	return true
 }
 
-func (b *Buffer) grow() error {
+func (b *TransportBuffer) grow() error {
 	var newSize int
-	if len(b.data) < cutoffSize {
+	if len(b.data) < transportCutoffSize {
 		newSize = 2 * len(b.data)
 	} else {
 		newSize = 5 * len(b.data) / 4
 	}
-	if newSize < minSize {
-		newSize = minSize
+	if newSize < transportMinSize {
+		newSize = transportMinSize
 	}
-	if b.limitSize <= 0 && newSize > maxSize {
-		newSize = maxSize
+	if b.limitSize <= 0 && newSize > transportMaxSize {
+		newSize = transportMaxSize
 	}
 
 	if b.limitSize > 0 && newSize > b.limitSize+1 {
@@ -481,7 +463,7 @@ func (b *Buffer) grow() error {
 	}
 
 	if newSize <= len(b.data) {
-		return ErrFull
+		return TransportErrFull
 	}
 
 	newData := make([]byte, newSize)
@@ -502,9 +484,9 @@ func (b *Buffer) grow() error {
 	return nil
 }
 
-func (b *Buffer) Write(packet []byte) (int, error) {
+func (b *TransportBuffer) Write(packet []byte) (int, error) {
 	if len(packet) >= 0x10000 {
-		return 0, errPacketTooBig
+		return 0, transportErrPacketTooBig
 	}
 
 	b.mutex.Lock()
@@ -518,7 +500,7 @@ func (b *Buffer) Write(packet []byte) (int, error) {
 	if b.limitSize > 0 && b.size()+2+len(packet) > b.limitSize {
 		b.mutex.Unlock()
 
-		return 0, ErrFull
+		return 0, TransportErrFull
 	}
 
 	for !b.available(len(packet)) {
@@ -558,11 +540,11 @@ func (b *Buffer) Write(packet []byte) (int, error) {
 	return len(packet), nil
 }
 
-func (b *Buffer) Read(packet []byte) (n int, err error) {
+func (b *TransportBuffer) Read(packet []byte) (n int, err error) {
 
 	select {
 	case <-b.readDeadline.Done():
-		return 0, &netError{ErrTimeout, true, true}
+		return 0, &transportNetError{TransportErrTimeout, true, true}
 	default:
 	}
 
@@ -624,13 +606,13 @@ func (b *Buffer) Read(packet []byte) (n int, err error) {
 
 		select {
 		case <-b.readDeadline.Done():
-			return 0, &netError{ErrTimeout, true, true}
+			return 0, &transportNetError{TransportErrTimeout, true, true}
 		case <-b.notify:
 		}
 	}
 }
 
-func (b *Buffer) Close() (err error) {
+func (b *TransportBuffer) Close() (err error) {
 	b.mutex.Lock()
 
 	if b.closed {
@@ -646,7 +628,7 @@ func (b *Buffer) Close() (err error) {
 	return nil
 }
 
-func (b *Buffer) size() int {
+func (b *TransportBuffer) size() int {
 	size := b.tail - b.head
 	if size < 0 {
 		size += len(b.data)
@@ -655,57 +637,53 @@ func (b *Buffer) size() int {
 	return size
 }
 
-func (b *Buffer) SetLimitSize(limit int) {
+func (b *TransportBuffer) SetLimitSize(limit int) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
 	b.limitSize = limit
 }
 
-func (b *Buffer) SetReadDeadline(t time.Time) error {
+func (b *TransportBuffer) SetReadDeadline(t time.Time) error {
 	b.readDeadline.Set(t)
 
 	return nil
 }
 
-// -----------------------------------------------------------------------------
-// replaydetector (was package replaydetector)
-// -----------------------------------------------------------------------------
-
-type ReplayDetector interface {
+type TransportReplayDetector interface {
 	Check(seq uint64) (accept func() bool, ok bool)
 }
 
-func nop() bool {
+func transportNop() bool {
 	return false
 }
 
-type slidingWindowDetector struct {
+type transportSlidingWindowDetector struct {
 	latestSeq  uint64
 	maxSeq     uint64
 	windowSize uint
-	mask       *fixedBigInt
+	mask       *transportFixedBigInt
 }
 
-func NewReplayDetector(windowSize uint, maxSeq uint64) ReplayDetector {
-	return &slidingWindowDetector{
+func TransportNewReplayDetector(windowSize uint, maxSeq uint64) TransportReplayDetector {
+	return &transportSlidingWindowDetector{
 		maxSeq:     maxSeq,
 		windowSize: windowSize,
-		mask:       newFixedBigInt(windowSize),
+		mask:       transportNewFixedBigInt(windowSize),
 	}
 }
 
-func (d *slidingWindowDetector) Check(seq uint64) (func() bool, bool) {
+func (d *transportSlidingWindowDetector) Check(seq uint64) (func() bool, bool) {
 	if seq > d.maxSeq {
-		return nop, false
+		return transportNop, false
 	}
 
 	if seq <= d.latestSeq {
 		if d.latestSeq >= uint64(d.windowSize)+seq {
-			return nop, false
+			return transportNop, false
 		}
 		if d.mask.Bit(uint(d.latestSeq-seq)) != 0 {
-			return nop, false
+			return transportNop, false
 		}
 	}
 
@@ -723,26 +701,26 @@ func (d *slidingWindowDetector) Check(seq uint64) (func() bool, bool) {
 	}, true
 }
 
-type fixedBigInt struct {
+type transportFixedBigInt struct {
 	bits    []uint64
 	n       uint
 	msbMask uint64
 }
 
-func newFixedBigInt(n uint) *fixedBigInt {
+func transportNewFixedBigInt(n uint) *transportFixedBigInt {
 	chunkSize := (n + 63) / 64
 	if chunkSize == 0 {
 		chunkSize = 1
 	}
 
-	return &fixedBigInt{
+	return &transportFixedBigInt{
 		bits:    make([]uint64, chunkSize),
 		n:       n,
 		msbMask: (1 << (64 - n%64)) - 1,
 	}
 }
 
-func (s *fixedBigInt) Lsh(n uint) {
+func (s *transportFixedBigInt) Lsh(n uint) {
 	if n == 0 {
 		return
 	}
@@ -762,7 +740,7 @@ func (s *fixedBigInt) Lsh(n uint) {
 	s.bits[len(s.bits)-1] &= s.msbMask
 }
 
-func (s *fixedBigInt) Bit(i uint) uint {
+func (s *transportFixedBigInt) Bit(i uint) uint {
 	if i >= s.n {
 		return 0
 	}
@@ -775,7 +753,7 @@ func (s *fixedBigInt) Bit(i uint) uint {
 	return 0
 }
 
-func (s *fixedBigInt) SetBit(i uint) {
+func (s *transportFixedBigInt) SetBit(i uint) {
 	if i >= s.n {
 		return
 	}
@@ -784,25 +762,20 @@ func (s *fixedBigInt) SetBit(i uint) {
 	s.bits[chunk] |= 1 << pos
 }
 
-// -----------------------------------------------------------------------------
-// stdnet (was package stdnet). The concrete Net implementation is renamed to
-// StdNet to avoid colliding with the Net interface above.
-// -----------------------------------------------------------------------------
-
-type StdNet struct {
-	interfaces []*Interface
+type TransportStdNet struct {
+	interfaces []*TransportInterface
 }
 
-func NewNet() (*StdNet, error) {
-	n := &StdNet{}
+func TransportNewNet() (*TransportStdNet, error) {
+	n := &TransportStdNet{}
 
 	return n, n.UpdateInterfaces()
 }
 
-var _ Net = &StdNet{}
+var _ TransportNet = &TransportStdNet{}
 
-func (n *StdNet) UpdateInterfaces() error {
-	ifs := []*Interface{}
+func (n *TransportStdNet) UpdateInterfaces() error {
+	ifs := []*TransportInterface{}
 
 	oifs, err := anet.Interfaces()
 	if err != nil {
@@ -810,7 +783,7 @@ func (n *StdNet) UpdateInterfaces() error {
 	}
 
 	for i := range oifs {
-		ifc := NewInterface(oifs[i])
+		ifc := TransportNewInterface(oifs[i])
 
 		addrs, err := anet.InterfaceAddrsByInterface(&oifs[i])
 		if err != nil {
@@ -829,107 +802,107 @@ func (n *StdNet) UpdateInterfaces() error {
 	return nil
 }
 
-func (n *StdNet) Interfaces() ([]*Interface, error) {
+func (n *TransportStdNet) Interfaces() ([]*TransportInterface, error) {
 	return n.interfaces, nil
 }
 
-func (n *StdNet) InterfaceByIndex(index int) (*Interface, error) {
+func (n *TransportStdNet) InterfaceByIndex(index int) (*TransportInterface, error) {
 	for _, ifc := range n.interfaces {
 		if ifc.Index == index {
 			return ifc, nil
 		}
 	}
 
-	return nil, fmt.Errorf("%w: index=%d", ErrInterfaceNotFound, index)
+	return nil, fmt.Errorf("%w: index=%d", TransportErrInterfaceNotFound, index)
 }
 
-func (n *StdNet) InterfaceByName(name string) (*Interface, error) {
+func (n *TransportStdNet) InterfaceByName(name string) (*TransportInterface, error) {
 	for _, ifc := range n.interfaces {
 		if ifc.Name == name {
 			return ifc, nil
 		}
 	}
 
-	return nil, fmt.Errorf("%w: %s", ErrInterfaceNotFound, name)
+	return nil, fmt.Errorf("%w: %s", TransportErrInterfaceNotFound, name)
 }
 
-func (n *StdNet) ListenPacket(network string, address string) (net.PacketConn, error) {
+func (n *TransportStdNet) ListenPacket(network string, address string) (net.PacketConn, error) {
 	return net.ListenPacket(network, address)
 }
 
-func (n *StdNet) ListenUDP(network string, locAddr *net.UDPAddr) (UDPConn, error) {
+func (n *TransportStdNet) ListenUDP(network string, locAddr *net.UDPAddr) (TransportUDPConn, error) {
 	return net.ListenUDP(network, locAddr)
 }
 
-func (n *StdNet) Dial(network, address string) (net.Conn, error) {
+func (n *TransportStdNet) Dial(network, address string) (net.Conn, error) {
 	return net.Dial(network, address)
 }
 
-func (n *StdNet) DialUDP(network string, laddr, raddr *net.UDPAddr) (UDPConn, error) {
+func (n *TransportStdNet) DialUDP(network string, laddr, raddr *net.UDPAddr) (TransportUDPConn, error) {
 	return net.DialUDP(network, laddr, raddr)
 }
 
-func (n *StdNet) ResolveIPAddr(network, address string) (*net.IPAddr, error) {
+func (n *TransportStdNet) ResolveIPAddr(network, address string) (*net.IPAddr, error) {
 	return net.ResolveIPAddr(network, address)
 }
 
-func (n *StdNet) ResolveUDPAddr(network, address string) (*net.UDPAddr, error) {
+func (n *TransportStdNet) ResolveUDPAddr(network, address string) (*net.UDPAddr, error) {
 	return net.ResolveUDPAddr(network, address)
 }
 
-func (n *StdNet) ResolveTCPAddr(network, address string) (*net.TCPAddr, error) {
+func (n *TransportStdNet) ResolveTCPAddr(network, address string) (*net.TCPAddr, error) {
 	return net.ResolveTCPAddr(network, address)
 }
 
-func (n *StdNet) DialTCP(network string, laddr, raddr *net.TCPAddr) (TCPConn, error) {
+func (n *TransportStdNet) DialTCP(network string, laddr, raddr *net.TCPAddr) (TransportTCPConn, error) {
 	return net.DialTCP(network, laddr, raddr)
 }
 
-func (n *StdNet) ListenTCP(network string, laddr *net.TCPAddr) (TCPListener, error) {
+func (n *TransportStdNet) ListenTCP(network string, laddr *net.TCPAddr) (TransportTCPListener, error) {
 	l, err := net.ListenTCP(network, laddr)
 	if err != nil {
 		return nil, err
 	}
 
-	return tcpListener{l}, nil
+	return transportTcpListener{l}, nil
 }
 
-type tcpListener struct {
+type transportTcpListener struct {
 	*net.TCPListener
 }
 
-func (l tcpListener) AcceptTCP() (TCPConn, error) {
+func (l transportTcpListener) AcceptTCP() (TransportTCPConn, error) {
 	return l.TCPListener.AcceptTCP()
 }
 
-type stdDialer struct {
+type transportStdDialer struct {
 	*net.Dialer
 }
 
-func (d stdDialer) Dial(network, address string) (net.Conn, error) {
+func (d transportStdDialer) Dial(network, address string) (net.Conn, error) {
 	return d.Dialer.Dial(network, address)
 }
 
-func (n *StdNet) CreateDialer(d *net.Dialer) Dialer {
-	return stdDialer{d}
+func (n *TransportStdNet) CreateDialer(d *net.Dialer) TransportDialer {
+	return transportStdDialer{d}
 }
 
-type stdListenConfig struct {
+type transportStdListenConfig struct {
 	*net.ListenConfig
 }
 
-func (d stdListenConfig) Listen(ctx context.Context, network, address string) (net.Listener, error) {
+func (d transportStdListenConfig) Listen(ctx context.Context, network, address string) (net.Listener, error) {
 	return d.ListenConfig.Listen(ctx, network, address)
 }
 
-func (d stdListenConfig) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
+func (d transportStdListenConfig) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
 	return d.ListenConfig.ListenPacket(ctx, network, address)
 }
 
-func (n *StdNet) CreateListenConfig(d *net.ListenConfig) ListenConfig {
-	return stdListenConfig{d}
+func (n *TransportStdNet) CreateListenConfig(d *net.ListenConfig) TransportListenConfig {
+	return transportStdListenConfig{d}
 }
 
-func XorBytes(dst, a, b []byte) int {
+func TransportXorBytes(dst, a, b []byte) int {
 	return subtle.XORBytes(dst, a, b)
 }

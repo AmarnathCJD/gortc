@@ -6,6 +6,7 @@
 package webrtc
 
 import (
+	wutil "github.com/amarnathcjd/gortc/webrtc"
 	"container/list"
 	"context"
 	"crypto"
@@ -23,23 +24,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	wutil "github.com/amarnathcjd/gortc/webrtc"
+
 	"github.com/amarnathcjd/gortc/webrtc/dtls"
 	"github.com/amarnathcjd/gortc/webrtc/ice"
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
-	"github.com/amarnathcjd/gortc/webrtc/interceptor/pkg/nack"
-	"github.com/amarnathcjd/gortc/webrtc/interceptor/pkg/report"
-	"github.com/amarnathcjd/gortc/webrtc/interceptor/pkg/stats"
-	"github.com/amarnathcjd/gortc/webrtc/interceptor/pkg/twcc"
-	"github.com/amarnathcjd/gortc/webrtc/logging"
-	"github.com/amarnathcjd/gortc/webrtc/rtcp"
-	"github.com/amarnathcjd/gortc/webrtc/rtp"
-	"github.com/amarnathcjd/gortc/webrtc/rtp/codecs"
+
 	"github.com/amarnathcjd/gortc/webrtc/sdp"
 	"github.com/amarnathcjd/gortc/webrtc/srtp"
 	"github.com/amarnathcjd/gortc/webrtc/stun"
-	"github.com/amarnathcjd/gortc/webrtc/transport"
-	"math"
+
 	"math/big"
 	"net"
 	"net/url"
@@ -72,7 +65,7 @@ func NewAPI(options ...func(*API)) *API {
 	}
 
 	if api.settingEngine.LoggerFactory == nil {
-		api.settingEngine.LoggerFactory = logging.NewDefaultLoggerFactory()
+		api.settingEngine.LoggerFactory = wutil.NewDefaultLoggerFactory()
 	}
 
 	logger := api.settingEngine.LoggerFactory.NewLogger("api")
@@ -87,12 +80,8 @@ func NewAPI(options ...func(*API)) *API {
 
 	if api.interceptorRegistry == nil {
 		api.interceptorRegistry = &interceptor.Registry{}
-		err := RegisterDefaultInterceptorsWithOptions(api.mediaEngine, api.interceptorRegistry,
-			WithInterceptorLoggerFactory(api.settingEngine.LoggerFactory))
-		if err != nil {
-			logger.Errorf("Failed to register default interceptors %s", err)
-		}
 	}
+	_ = logger
 
 	return api
 }
@@ -153,7 +142,7 @@ type DataChannel struct {
 	onErrorHandler             func(error)
 	sctpTransport              *SCTPTransport
 	api                        *API
-	log                        logging.LeveledLogger
+	log                        wutil.LeveledLogger
 }
 
 func (api *API) NewDataChannel(_ *SCTPTransport, _ *DataChannelParameters) (*DataChannel, error) {
@@ -163,7 +152,7 @@ func (api *API) NewDataChannel(_ *SCTPTransport, _ *DataChannelParameters) (*Dat
 func (api *API) newDataChannel(
 	params *DataChannelParameters,
 	sctpTransport *SCTPTransport,
-	log logging.LeveledLogger,
+	log wutil.LeveledLogger,
 ) (*DataChannel, error) {
 	if len(params.Label) > 65535 {
 		return nil, &TypeError{Err: ErrStringSizeLimit}
@@ -299,7 +288,7 @@ type DTLSTransport struct {
 	srtpReady                   chan struct{}
 	dtlsMatcher                 MatchFunc
 	api                         *API
-	log                         logging.LeveledLogger
+	log                         wutil.LeveledLogger
 }
 
 type simulcastStreamPair struct {
@@ -375,8 +364,8 @@ func (t *DTLSTransport) State() DTLSTransportState {
 	return t.state
 }
 
-func (t *DTLSTransport) WriteRTCP(pkts []rtcp.Packet) (int, error) {
-	raw, err := rtcp.Marshal(pkts)
+func (t *DTLSTransport) WriteRTCP(pkts []wutil.RtcpPacket) (int, error) {
+	raw, err := wutil.RtcpMarshal(pkts)
 	if err != nil {
 		return 0, err
 	}
@@ -946,7 +935,7 @@ func (api *API) NewICETransport(gatherer *ICEGatherer) *ICETransport {
 
 type ICEGatherer struct {
 	lock                       sync.RWMutex
-	log                        logging.LeveledLogger
+	log                        wutil.LeveledLogger
 	state                      ICEGathererState
 	validatedServers           []*stun.URI
 	gatherPolicy               ICETransportPolicy
@@ -1810,8 +1799,8 @@ type ICETransport struct {
 	conn                                   *ice.Conn
 	mux                                    *Mux
 	ctxCancel                              func()
-	loggerFactory                          logging.LoggerFactory
-	log                                    logging.LeveledLogger
+	loggerFactory                          wutil.LoggerFactory
+	log                                    wutil.LeveledLogger
 }
 
 func (t *ICETransport) GetSelectedCandidatePair() (*ICECandidatePair, error) {
@@ -1842,7 +1831,7 @@ func (t *ICETransport) GetSelectedCandidatePairStats() (ICECandidatePairStats, b
 	return t.gatherer.getSelectedCandidatePairStats()
 }
 
-func NewICETransport(gatherer *ICEGatherer, loggerFactory logging.LoggerFactory) *ICETransport {
+func NewICETransport(gatherer *ICEGatherer, loggerFactory wutil.LoggerFactory) *ICETransport {
 	iceTransport := &ICETransport{
 		gatherer:      gatherer,
 		loggerFactory: loggerFactory,
@@ -2198,170 +2187,13 @@ func (t *ICETransport) setRemoteCredentials(newUfrag, newPwd string) error {
 	return agent.SetRemoteCredentials(newUfrag, newPwd)
 }
 
-func RegisterDefaultInterceptors(mediaEngine *MediaEngine, interceptorRegistry *interceptor.Registry) error {
-	return RegisterDefaultInterceptorsWithOptions(mediaEngine, interceptorRegistry)
-}
-
-func RegisterDefaultInterceptorsWithOptions(mediaEngine *MediaEngine, interceptorRegistry *interceptor.Registry,
-	opts ...InterceptorOption,
-) error {
-	var options interceptorOptions
-	for _, opt := range opts {
-		opt(&options)
-	}
-
-	if options.loggerFactory != nil {
-
-		options.nackGeneratorOptions = append(options.nackGeneratorOptions,
-			nack.WithGeneratorLoggerFactory(options.loggerFactory))
-		options.nackResponderOptions = append(options.nackResponderOptions,
-			nack.WithResponderLoggerFactory(options.loggerFactory))
-		options.reportReceiverOptions = append(options.reportReceiverOptions,
-			report.WithReceiverLoggerFactory(options.loggerFactory))
-		options.reportSenderOptions = append(options.reportSenderOptions,
-			report.WithSenderLoggerFactory(options.loggerFactory))
-		options.statsOptions = append(options.statsOptions, stats.WithLoggerFactory(options.loggerFactory))
-		options.twccOptions = append(options.twccOptions, twcc.WithLoggerFactory(options.loggerFactory))
-	}
-
-	if err := ConfigureNackWithOptions(mediaEngine, interceptorRegistry, options.nackGeneratorOptions,
-		options.nackResponderOptions...); err != nil {
-		return err
-	}
-
-	if err := ConfigureRTCPReportsWithOptions(interceptorRegistry, options.reportReceiverOptions,
-		options.reportSenderOptions...); err != nil {
-		return err
-	}
-
-	if err := ConfigureSimulcastExtensionHeaders(mediaEngine); err != nil {
-		return err
-	}
-
-	if err := ConfigureStatsInterceptorWithOptions(interceptorRegistry, options.statsOptions...); err != nil {
-		return err
-	}
-
-	return ConfigureTWCCSenderWithOptions(mediaEngine, interceptorRegistry, options.twccOptions...)
-}
-
-func ConfigureStatsInterceptorWithOptions(interceptorRegistry *interceptor.Registry, opts ...stats.Option) error {
-	statsInterceptor, err := stats.NewInterceptor(opts...)
-	if err != nil {
-		return err
-	}
-	statsInterceptor.OnNewPeerConnection(func(id string, stats stats.Getter) {
-		statsGetter.Store(id, stats)
-	})
-	interceptorRegistry.Add(statsInterceptor)
-
+func RegisterDefaultInterceptors(_ *MediaEngine, _ *interceptor.Registry) error {
 	return nil
-}
-
-func lookupStats(id string) (stats.Getter, bool) {
-	if value, exists := statsGetter.Load(id); exists {
-		if getter, ok := value.(stats.Getter); ok {
-			return getter, true
-		}
-	}
-
-	return nil, false
-}
-
-func cleanupStats(id string) {
-	statsGetter.Delete(id)
-}
-
-var statsGetter sync.Map
-
-func ConfigureRTCPReportsWithOptions(interceptorRegistry *interceptor.Registry, recvOpts []report.ReceiverOption,
-	sendOpts ...report.SenderOption,
-) error {
-	receiver, err := report.NewReceiverInterceptor(recvOpts...)
-	if err != nil {
-		return err
-	}
-
-	sender, err := report.NewSenderInterceptor(sendOpts...)
-	if err != nil {
-		return err
-	}
-
-	interceptorRegistry.Add(receiver)
-	interceptorRegistry.Add(sender)
-
-	return nil
-}
-
-func ConfigureNackWithOptions(mediaEngine *MediaEngine, interceptorRegistry *interceptor.Registry,
-	genOpts []nack.GeneratorOption, respOpts ...nack.ResponderOption,
-) error {
-	generator, err := nack.NewGeneratorInterceptor(genOpts...)
-	if err != nil {
-		return err
-	}
-
-	responder, err := nack.NewResponderInterceptor(respOpts...)
-	if err != nil {
-		return err
-	}
-
-	mediaEngine.RegisterFeedback(RTCPFeedback{Type: "nack"}, RTPCodecTypeVideo)
-	mediaEngine.RegisterFeedback(RTCPFeedback{Type: "nack", Parameter: "pli"}, RTPCodecTypeVideo)
-	interceptorRegistry.Add(responder)
-	interceptorRegistry.Add(generator)
-
-	return nil
-}
-
-func ConfigureTWCCSenderWithOptions(mediaEngine *MediaEngine, interceptorRegistry *interceptor.Registry,
-	opts ...twcc.Option,
-) error {
-	mediaEngine.RegisterFeedback(RTCPFeedback{Type: TypeRTCPFBTransportCC}, RTPCodecTypeVideo)
-	if err := mediaEngine.RegisterHeaderExtension(
-		RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, RTPCodecTypeVideo,
-	); err != nil {
-		return err
-	}
-
-	mediaEngine.RegisterFeedback(RTCPFeedback{Type: TypeRTCPFBTransportCC}, RTPCodecTypeAudio)
-	if err := mediaEngine.RegisterHeaderExtension(
-		RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, RTPCodecTypeAudio,
-	); err != nil {
-		return err
-	}
-
-	generator, err := twcc.NewSenderInterceptor(opts...)
-	if err != nil {
-		return err
-	}
-
-	interceptorRegistry.Add(generator)
-
-	return nil
-}
-
-func ConfigureSimulcastExtensionHeaders(mediaEngine *MediaEngine) error {
-	if err := mediaEngine.RegisterHeaderExtension(
-		RTPHeaderExtensionCapability{URI: sdp.SDESMidURI}, RTPCodecTypeVideo,
-	); err != nil {
-		return err
-	}
-
-	if err := mediaEngine.RegisterHeaderExtension(
-		RTPHeaderExtensionCapability{URI: sdp.SDESRTPStreamIDURI}, RTPCodecTypeVideo,
-	); err != nil {
-		return err
-	}
-
-	return mediaEngine.RegisterHeaderExtension(
-		RTPHeaderExtensionCapability{URI: sdp.SDESRepairRTPStreamIDURI}, RTPCodecTypeVideo,
-	)
 }
 
 type interceptorToTrackLocalWriter struct{ interceptor atomic.Value }
 
-func (i *interceptorToTrackLocalWriter) WriteRTP(header *rtp.Header, payload []byte) (int, error) {
+func (i *interceptorToTrackLocalWriter) WriteRTP(header *wutil.RtpHeader, payload []byte) (int, error) {
 	if writer, ok := i.interceptor.Load().(interceptor.RTPWriter); ok && writer != nil {
 		return writer.Write(header, payload, interceptor.Attributes{})
 	}
@@ -2370,12 +2202,12 @@ func (i *interceptorToTrackLocalWriter) WriteRTP(header *rtp.Header, payload []b
 }
 
 func (i *interceptorToTrackLocalWriter) Write(b []byte) (int, error) {
-	packet := &rtp.Packet{}
+	packet := &wutil.RtpPacket{}
 	if err := packet.Unmarshal(b); err != nil {
 		return 0, err
 	}
 
-	return i.WriteRTP(&packet.Header, packet.Payload)
+	return i.WriteRTP(&packet.RtpHeader, packet.Payload)
 }
 
 func createStreamInfo(
@@ -2410,24 +2242,6 @@ func createStreamInfo(
 		Channels:                          codec.Channels,
 		SDPFmtpLine:                       codec.SDPFmtpLine,
 		RTCPFeedback:                      feedbacks,
-	}
-}
-
-type interceptorOptions struct {
-	loggerFactory         logging.LoggerFactory
-	nackGeneratorOptions  []nack.GeneratorOption
-	nackResponderOptions  []nack.ResponderOption
-	reportReceiverOptions []report.ReceiverOption
-	reportSenderOptions   []report.SenderOption
-	statsOptions          []stats.Option
-	twccOptions           []twcc.Option
-}
-
-type InterceptorOption func(*interceptorOptions)
-
-func WithInterceptorLoggerFactory(loggerFactory logging.LoggerFactory) InterceptorOption {
-	return func(o *interceptorOptions) {
-		o.loggerFactory = loggerFactory
 	}
 }
 
@@ -3036,12 +2850,12 @@ func (m *MediaEngine) getRTPParametersByPayloadType(payloadType PayloadType) (RT
 	}, nil
 }
 
-func payloaderForCodec(codec RTPCodecCapability) (rtp.Payloader, error) {
+func payloaderForCodec(codec RTPCodecCapability) (wutil.RtpPayloader, error) {
 	switch strings.ToLower(codec.MimeType) {
 	case strings.ToLower(MimeTypeOpus):
-		return &codecs.OpusPayloader{}, nil
+		return &wutil.OpusPayloader{}, nil
 	case strings.ToLower(MimeTypeVP8):
-		return &codecs.VP8Payloader{
+		return &wutil.VP8Payloader{
 			EnablePictureID: true,
 		}, nil
 	default:
@@ -3106,9 +2920,8 @@ type PeerConnection struct {
 	dtlsTransport                           *DTLSTransport
 	sctpTransport                           *SCTPTransport
 	api                                     *API
-	log                                     logging.LeveledLogger
+	log                                     wutil.LeveledLogger
 	interceptorRTCPWriter                   interceptor.RTCPWriter
-	statsGetter                             stats.Getter
 }
 
 func (api *API) NewPeerConnection(configuration Configuration) (*PeerConnection, error) {
@@ -3145,10 +2958,6 @@ func (api *API) NewPeerConnection(configuration Configuration) (*PeerConnection,
 	i, err := api.interceptorRegistry.Build(pc.id)
 	if err != nil {
 		return nil, err
-	}
-
-	if getter, ok := lookupStats(pc.id); ok {
-		pc.statsGetter = getter
 	}
 
 	pc.api = &API{
@@ -5233,13 +5042,13 @@ func (pc *PeerConnection) SetIdentityProvider(string) error {
 	return errPeerConnSetIdentityProviderNotImplemented
 }
 
-func (pc *PeerConnection) WriteRTCP(pkts []rtcp.Packet) error {
+func (pc *PeerConnection) WriteRTCP(pkts []wutil.RtcpPacket) error {
 	_, err := pc.interceptorRTCPWriter.Write(pkts, make(interceptor.Attributes))
 
 	return err
 }
 
-func (pc *PeerConnection) writeRTCP(pkts []rtcp.Packet, _ interceptor.Attributes) (int, error) {
+func (pc *PeerConnection) writeRTCP(pkts []wutil.RtcpPacket, _ interceptor.Attributes) (int, error) {
 	return pc.dtlsTransport.WriteRTCP(pkts)
 }
 
@@ -5340,9 +5149,6 @@ func (pc *PeerConnection) close(shouldGracefullyClose bool) error {
 	pc.updateConnectionState(pc.ICEConnectionState(), pc.dtlsTransport.State())
 
 	closeErrs = append(closeErrs, doGracefulCloseOps()...)
-
-	pc.statsGetter = nil
-	cleanupStats(pc.id)
 
 	closeErrs = append(closeErrs, pc.api.interceptor.Close())
 
@@ -5481,7 +5287,7 @@ func (pc *PeerConnection) GetStats() StatsReport {
 
 	receivers := pc.GetReceivers()
 	for _, receiver := range receivers {
-		receiver.collectStats(statsCollector, pc.statsGetter)
+		receiver.collectStats(statsCollector)
 	}
 
 	pc.api.mediaEngine.collectStats(statsCollector)
@@ -5875,7 +5681,7 @@ type RTPReceiver struct {
 	tr                   *RTPTransceiver
 	api                  *API
 	rtxPool              sync.Pool
-	log                  logging.LeveledLogger
+	log                  wutil.LeveledLogger
 }
 
 func (api *API) NewRTPReceiver(kind RTPCodecType, transport *DTLSTransport) (*RTPReceiver, error) {
@@ -6110,14 +5916,14 @@ func (r *RTPReceiver) ReadSimulcast(b []byte, rid string) (n int, a interceptor.
 	}
 }
 
-func (r *RTPReceiver) ReadRTCP() ([]rtcp.Packet, interceptor.Attributes, error) {
+func (r *RTPReceiver) ReadRTCP() ([]wutil.RtcpPacket, interceptor.Attributes, error) {
 	b := make([]byte, r.api.settingEngine.getReceiveMTU())
 	i, attributes, err := r.Read(b)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	pkts, err := rtcp.Unmarshal(b[:i])
+	pkts, err := wutil.RtcpUnmarshal(b[:i])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -6125,14 +5931,14 @@ func (r *RTPReceiver) ReadRTCP() ([]rtcp.Packet, interceptor.Attributes, error) 
 	return pkts, attributes, nil
 }
 
-func (r *RTPReceiver) ReadSimulcastRTCP(rid string) ([]rtcp.Packet, interceptor.Attributes, error) {
+func (r *RTPReceiver) ReadSimulcastRTCP(rid string) ([]wutil.RtcpPacket, interceptor.Attributes, error) {
 	b := make([]byte, r.api.settingEngine.getReceiveMTU())
 	i, attributes, err := r.ReadSimulcast(b, rid)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	pkts, err := rtcp.Unmarshal(b[:i])
+	pkts, err := wutil.RtcpUnmarshal(b[:i])
 
 	return pkts, attributes, err
 }
@@ -6201,11 +6007,7 @@ func (r *RTPReceiver) Stop() error {
 	return err
 }
 
-func (r *RTPReceiver) collectStats(collector *statsReportCollector, statsGetter stats.Getter) {
-	if statsGetter == nil {
-		return
-	}
-
+func (r *RTPReceiver) collectStats(collector *statsReportCollector) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -6229,7 +6031,7 @@ func (r *RTPReceiver) collectStats(collector *statsReportCollector, statsGetter 
 			codecID = remoteTrack.codec.statsID
 		}
 
-		inboundStats := InboundRTPStreamStats{
+		collector.Collect(inboundID, InboundRTPStreamStats{
 			Rid:         remoteTrack.RID(),
 			Mid:         mid,
 			Timestamp:   now,
@@ -6239,48 +6041,12 @@ func (r *RTPReceiver) collectStats(collector *statsReportCollector, statsGetter 
 			Kind:        r.kind.String(),
 			TransportID: "iceTransport",
 			CodecID:     codecID,
-		}
-		r.populateInboundStats(&inboundStats, statsGetter, remoteTrack)
-
-		collector.Collect(inboundID, inboundStats)
+		})
 
 		if remoteTrack.Kind() == RTPCodecTypeAudio {
 			r.collectAudioPlayoutStats(collector, nowTime, remoteTrack)
 		}
 	}
-}
-
-func (r *RTPReceiver) populateInboundStats(
-	inboundStats *InboundRTPStreamStats,
-	statsGetter stats.Getter,
-	remoteTrack *TrackRemote,
-) {
-	stats := statsGetter.Get(uint32(remoteTrack.SSRC()))
-	if stats == nil {
-		return
-	}
-
-	pr := stats.InboundRTPStreamStats.PacketsReceived
-	if pr > math.MaxUint32 {
-		r.log.Warnf("Inbound PacketsReceived exceeds uint32 and will wrap: %d", pr)
-	}
-	inboundStats.PacketsReceived = uint32(pr)
-
-	pl := stats.InboundRTPStreamStats.PacketsLost
-	if pl > math.MaxInt32 || pl < math.MinInt32 {
-		r.log.Warnf("Inbound PacketsLost exceeds int32 range and will wrap: %d", pl)
-	}
-	inboundStats.PacketsLost = int32(pl)
-
-	inboundStats.Jitter = stats.InboundRTPStreamStats.Jitter
-	inboundStats.BytesReceived = stats.InboundRTPStreamStats.BytesReceived
-	inboundStats.HeaderBytesReceived = stats.InboundRTPStreamStats.HeaderBytesReceived
-	timestamp := stats.InboundRTPStreamStats.LastPacketReceivedTimestamp
-	inboundStats.LastPacketReceivedTimestamp = StatsTimestamp(
-		timestamp.UnixNano() / int64(time.Millisecond))
-	inboundStats.FIRCount = stats.InboundRTPStreamStats.FIRCount
-	inboundStats.PLICount = stats.InboundRTPStreamStats.PLICount
-	inboundStats.NACKCount = stats.InboundRTPStreamStats.NACKCount
 }
 
 func (r *RTPReceiver) collectAudioPlayoutStats(
@@ -6873,7 +6639,7 @@ func (r *RTPSender) Send(parameters RTPSendParameters) error {
 
 		rtpInterceptor := r.api.interceptor.BindLocalStream(
 			&trackEncoding.streamInfo,
-			interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, _ interceptor.Attributes) (int, error) {
+			interceptor.RTPWriterFunc(func(header *wutil.RtpHeader, payload []byte, _ interceptor.Attributes) (int, error) {
 				return srtpStream.WriteRTP(header, payload)
 			}),
 		)
@@ -6926,14 +6692,14 @@ func (r *RTPSender) Read(b []byte) (n int, a interceptor.Attributes, err error) 
 	}
 }
 
-func (r *RTPSender) ReadRTCP() ([]rtcp.Packet, interceptor.Attributes, error) {
+func (r *RTPSender) ReadRTCP() ([]wutil.RtcpPacket, interceptor.Attributes, error) {
 	b := make([]byte, r.api.settingEngine.getReceiveMTU())
 	i, attributes, err := r.Read(b)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	pkts, err := rtcp.Unmarshal(b[:i])
+	pkts, err := wutil.RtcpUnmarshal(b[:i])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -6961,14 +6727,14 @@ func (r *RTPSender) ReadSimulcast(b []byte, rid string) (n int, a interceptor.At
 	}
 }
 
-func (r *RTPSender) ReadSimulcastRTCP(rid string) ([]rtcp.Packet, interceptor.Attributes, error) {
+func (r *RTPSender) ReadSimulcastRTCP(rid string) ([]wutil.RtcpPacket, interceptor.Attributes, error) {
 	b := make([]byte, r.api.settingEngine.getReceiveMTU())
 	i, attributes, err := r.ReadSimulcast(b, rid)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	pkts, err := rtcp.Unmarshal(b[:i])
+	pkts, err := wutil.RtcpUnmarshal(b[:i])
 
 	return pkts, attributes, err
 }
@@ -7398,14 +7164,14 @@ func handleUnknownRTPPacket(
 	streamIDExtensionID,
 	repairStreamIDExtensionID uint8,
 ) (mid, rid, rsid string, paddingOnly bool, err error) {
-	rp := &rtp.Packet{}
+	rp := &wutil.RtpPacket{}
 	if err = rp.Unmarshal(buf); err != nil {
 		return mid, rid, rsid, false, err
 	}
 
 	isPaddingOnlyPacket := rp.Padding && len(rp.Payload) == 0
 
-	if !rp.Header.Extension {
+	if !rp.RtpHeader.Extension {
 		return mid, rid, rsid, isPaddingOnlyPacket, nil
 	}
 
@@ -7444,7 +7210,7 @@ type SCTPTransport struct {
 	dataChannelsRequested      uint32
 	dataChannelsAccepted       uint32
 	api                        *API
-	log                        logging.LeveledLogger
+	log                        wutil.LeveledLogger
 }
 
 func (api *API) NewSCTPTransport(dtls *DTLSTransport) *SCTPTransport {
@@ -7580,7 +7346,7 @@ func filterTrackWithSSRC(incomingTracks []trackDetails, ssrc SSRC) []trackDetail
 }
 
 func trackDetailsFromSDP(
-	log logging.LeveledLogger,
+	log wutil.LeveledLogger,
 	s *sdp.SessionDescription,
 ) (incomingTracks []trackDetails) {
 	for _, media := range s.MediaDescriptions {
@@ -8295,7 +8061,7 @@ func getMidValue(media *sdp.MediaDescription) string {
 	return ""
 }
 
-func descriptionIsPlanB(desc *SessionDescription, log logging.LeveledLogger) bool {
+func descriptionIsPlanB(desc *SessionDescription, log wutil.LeveledLogger) bool {
 	if desc == nil || desc.parsed == nil {
 		return false
 	}
@@ -8406,7 +8172,7 @@ type identifiedMediaDescription struct {
 
 func extractICEDetailsFromMedia(
 	media *identifiedMediaDescription,
-	log logging.LeveledLogger,
+	log wutil.LeveledLogger,
 ) (string, string, []ICECandidate, error) {
 	remoteUfrag := ""
 	remotePwd := ""
@@ -8476,7 +8242,7 @@ type sdpICEDetails struct {
 
 func extractICEDetails(
 	desc *sdp.SessionDescription,
-	log logging.LeveledLogger,
+	log wutil.LeveledLogger,
 ) (*sdpICEDetails, error) {
 	details := &sdpICEDetails{
 		Candidates: []ICECandidate{},
@@ -8765,9 +8531,9 @@ type SettingEngine struct {
 	disableCertificateFingerprintVerification bool
 	disableSRTPReplayProtection               bool
 	disableSRTCPReplayProtection              bool
-	net                                       transport.Net
-	BufferFactory                             func(packetType transport.BufferPacketType, ssrc uint32) io.ReadWriteCloser
-	LoggerFactory                             logging.LoggerFactory
+	net                                       wutil.TransportNet
+	BufferFactory                             func(packetType wutil.TransportBufferPacketType, ssrc uint32) io.ReadWriteCloser
+	LoggerFactory                             wutil.LoggerFactory
 	iceTCPMux                                 ice.TCPMux
 	iceUDPMux                                 ice.UDPMux
 	iceProxyDialer                            proxy.Dialer
@@ -8947,7 +8713,7 @@ func (e *SettingEngine) SetAnsweringDTLSRole(role DTLSRole) error {
 	return nil
 }
 
-func (e *SettingEngine) SetNet(net transport.Net) {
+func (e *SettingEngine) SetNet(net wutil.TransportNet) {
 	e.net = net
 }
 
@@ -9245,7 +9011,7 @@ func (s *srtpWriterFuture) SetReadDeadline(t time.Time) error {
 	return s.SetReadDeadline(t)
 }
 
-func (s *srtpWriterFuture) WriteRTP(header *rtp.Header, payload []byte) (int, error) {
+func (s *srtpWriterFuture) WriteRTP(header *wutil.RtpHeader, payload []byte) (int, error) {
 	if value, ok := s.rtpWriteStream.Load().(*srtp.WriteStreamSRTP); ok {
 		return value.WriteRTP(header, payload)
 	}
@@ -9376,7 +9142,7 @@ type TrackLocalStaticRTP struct {
 	mu                sync.RWMutex
 	bindings          []trackBinding
 	codec             RTPCodecCapability
-	payloader         func(RTPCodecCapability) (rtp.Payloader, error)
+	payloader         func(RTPCodecCapability) (wutil.RtpPayloader, error)
 	id, rid, streamID string
 	initalTimestamp   *uint32
 	initialSeqNumber  *uint16
@@ -9465,22 +9231,22 @@ func (s *TrackLocalStaticRTP) Codec() RTPCodecCapability {
 
 var rtpPacketPool = sync.Pool{
 	New: func() any {
-		return &rtp.Packet{}
+		return &wutil.RtpPacket{}
 	},
 }
 
-func resetPacketPoolAllocation(localPacket *rtp.Packet) {
-	*localPacket = rtp.Packet{}
+func resetPacketPoolAllocation(localPacket *wutil.RtpPacket) {
+	*localPacket = wutil.RtpPacket{}
 	rtpPacketPool.Put(localPacket)
 }
 
-func getPacketAllocationFromPool() *rtp.Packet {
+func getPacketAllocationFromPool() *wutil.RtpPacket {
 	ipacket := rtpPacketPool.Get()
 
-	return ipacket.(*rtp.Packet)
+	return ipacket.(*wutil.RtpPacket)
 }
 
-func (s *TrackLocalStaticRTP) WriteRTP(p *rtp.Packet) error {
+func (s *TrackLocalStaticRTP) WriteRTP(p *wutil.RtpPacket) error {
 	packet := getPacketAllocationFromPool()
 
 	defer resetPacketPoolAllocation(packet)
@@ -9490,20 +9256,20 @@ func (s *TrackLocalStaticRTP) WriteRTP(p *rtp.Packet) error {
 	return s.writeRTP(packet)
 }
 
-func (s *TrackLocalStaticRTP) writeRTP(packet *rtp.Packet) error {
+func (s *TrackLocalStaticRTP) writeRTP(packet *wutil.RtpPacket) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	writeErrs := []error{}
 
 	for _, b := range s.bindings {
-		packet.Header.SSRC = uint32(b.ssrc)
-		packet.Header.PayloadType = uint8(b.payloadType)
+		packet.RtpHeader.SSRC = uint32(b.ssrc)
+		packet.RtpHeader.PayloadType = uint8(b.payloadType)
 
-		if packet.PaddingSize != 0 && packet.Header.PaddingSize == 0 {
-			packet.Header.PaddingSize = packet.PaddingSize
+		if packet.PaddingSize != 0 && packet.RtpHeader.PaddingSize == 0 {
+			packet.RtpHeader.PaddingSize = packet.PaddingSize
 		}
-		if _, err := b.writeStream.WriteRTP(&packet.Header, packet.Payload); err != nil {
+		if _, err := b.writeStream.WriteRTP(&packet.RtpHeader, packet.Payload); err != nil {
 			writeErrs = append(writeErrs, err)
 		}
 	}
@@ -9525,8 +9291,8 @@ func (s *TrackLocalStaticRTP) Write(b []byte) (n int, err error) {
 
 type TrackLocalStaticSample struct {
 	mu         sync.Mutex
-	packetizer rtp.Packetizer
-	sequencer  rtp.Sequencer
+	packetizer wutil.RtpPacketizer
+	sequencer  wutil.RtpSequencer
 	rtpTrack   *TrackLocalStaticRTP
 	clockRate  float64
 	remainder  float64
@@ -9582,21 +9348,21 @@ func (s *TrackLocalStaticSample) Bind(t TrackLocalContext) (RTPCodecParameters, 
 		return codec, err
 	}
 
-	options := []rtp.PacketizerOption{}
+	options := []wutil.RtpPacketizerOption{}
 
 	if s.rtpTrack.initalTimestamp != nil {
-		options = append(options, rtp.WithTimestamp(*s.rtpTrack.initalTimestamp))
+		options = append(options, wutil.RtpWithTimestamp(*s.rtpTrack.initalTimestamp))
 	}
 
 	if s.rtpTrack.initialSeqNumber != nil {
-		s.sequencer = rtp.NewFixedSequencer(*s.rtpTrack.initialSeqNumber)
+		s.sequencer = wutil.RtpNewFixedSequencer(*s.rtpTrack.initialSeqNumber)
 	}
 
 	if s.sequencer == nil {
-		s.sequencer = rtp.NewRandomSequencer()
+		s.sequencer = wutil.RtpNewRandomSequencer()
 	}
 
-	s.packetizer = rtp.NewPacketizerWithOptions(
+	s.packetizer = wutil.RtpNewPacketizerWithOptions(
 		outboundMTU,
 		payloader,
 		s.sequencer,
@@ -9824,14 +9590,14 @@ func (t *TrackRemote) checkAndUpdateTrack(b []byte) error {
 	return nil
 }
 
-func (t *TrackRemote) ReadRTP() (*rtp.Packet, interceptor.Attributes, error) {
+func (t *TrackRemote) ReadRTP() (*wutil.RtpPacket, interceptor.Attributes, error) {
 	b := make([]byte, t.receiver.api.settingEngine.getReceiveMTU())
 	i, attributes, err := t.Read(b)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	r := &rtp.Packet{}
+	r := &wutil.RtpPacket{}
 	if err := r.Unmarshal(b[:i]); err != nil {
 		return nil, nil, err
 	}
@@ -13177,7 +12943,7 @@ type SCTPTransportStats struct {
 func (s SCTPTransportStats) statsMarker() {}
 
 type TrackLocalWriter interface {
-	WriteRTP(header *rtp.Header, payload []byte) (int, error)
+	WriteRTP(header *wutil.RtpHeader, payload []byte) (int, error)
 	Write(b []byte) (int, error)
 }
 
@@ -13249,7 +13015,7 @@ type PayloadType uint8
 
 type Endpoint struct {
 	mux     *Mux
-	buffer  *transport.Buffer
+	buffer  *wutil.TransportBuffer
 	onClose func()
 }
 
@@ -13329,7 +13095,7 @@ const (
 type Config struct {
 	Conn          net.Conn
 	BufferSize    int
-	LoggerFactory logging.LoggerFactory
+	LoggerFactory wutil.LoggerFactory
 }
 
 type Mux struct {
@@ -13340,7 +13106,7 @@ type Mux struct {
 	isClosed       bool
 	pendingPackets [][]byte
 	closedCh       chan struct{}
-	log            logging.LeveledLogger
+	log            wutil.LeveledLogger
 }
 
 func NewMux(config Config) *Mux {
@@ -13360,7 +13126,7 @@ func NewMux(config Config) *Mux {
 func (m *Mux) NewEndpoint(matchFunc MatchFunc) *Endpoint {
 	endpoint := &Endpoint{
 		mux:    m,
-		buffer: transport.NewBuffer(),
+		buffer: wutil.TransportNewBuffer(),
 	}
 
 	endpoint.buffer.SetLimitSize(maxBufferSize)
@@ -13415,7 +13181,7 @@ func (m *Mux) readLoop() {
 		switch {
 		case errors.Is(err, io.EOF), errors.Is(err, ice.ErrClosed):
 			return
-		case errors.Is(err, io.ErrShortBuffer), errors.Is(err, transport.ErrTimeout):
+		case errors.Is(err, io.ErrShortBuffer), errors.Is(err, wutil.TransportErrTimeout):
 			m.log.Errorf("mux: failed to read from packetio.Buffer %s", err.Error())
 
 			continue
@@ -13480,7 +13246,7 @@ func (m *Mux) dispatch(buf []byte) error {
 	m.lock.Unlock()
 	_, err := endpoint.buffer.Write(buf)
 
-	if errors.Is(err, transport.ErrFull) {
+	if errors.Is(err, wutil.TransportErrFull) {
 		m.log.Infof("mux: endpoint buffer is full, dropping packet")
 
 		return nil
@@ -13637,5 +13403,5 @@ type Sample struct {
 	PacketTimestamp    uint32
 	PrevDroppedPackets uint16
 	Metadata           any
-	RTPHeaders         []*rtp.Header
+	RTPHeaders         []*wutil.RtpHeader
 }
