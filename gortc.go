@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/amarnathcjd/gortc/confcall"
 	"github.com/amarnathcjd/gortc/groupcall"
 	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/media"
@@ -221,4 +222,22 @@ var (
 
 func NewPhoneCall(client *telegram.Client, opts ...PhoneOption) *PhoneCall {
 	return phonecall.New(client, opts...)
+}
+
+type (
+	ConferenceCall           = confcall.ConferenceCall
+	IncomingConferenceCall   = confcall.IncomingConferenceCall
+	ConferenceOption         = confcall.Option
+)
+
+var (
+	WithConferenceLogger   = confcall.WithLogger
+	WithConferenceLogLevel = confcall.WithLogLevel
+)
+
+// NewConferenceCall constructs an E2E conference call handle. Use
+// Create to start a new call (and obtain a shareable slug) or Join /
+// JoinFromInvite to join an existing one.
+func NewConferenceCall(client *telegram.Client, opts ...ConferenceOption) *ConferenceCall {
+	return confcall.New(client, opts...)
 }

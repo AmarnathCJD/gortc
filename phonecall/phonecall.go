@@ -99,12 +99,13 @@ type PhoneCall struct {
 	discarded    chan *telegram.PhoneCallDiscarded
 	handlersOnce sync.Once
 
-	onIncoming     func(*IncomingCall)
-	onConnected    func()
-	onDisconnected func()
-	onStateChange  func(string)
-	onTrack        func(*media.IncomingTrack)
-	onStreamEnded  func(error)
+	onIncoming           func(*IncomingCall)
+	onConnected          func()
+	onDisconnected       func()
+	onStateChange        func(string)
+	onTrack              func(*media.IncomingTrack)
+	onStreamEnded        func(error)
+	onMigrationRequested func(slug string)
 }
 
 func New(client *telegram.Client, opts ...Option) *PhoneCall {
@@ -150,6 +151,14 @@ func (pc *PhoneCall) resetForNewCall() {
 func (pc *PhoneCall) OnConnected(fn func())         { pc.onConnected = fn }
 func (pc *PhoneCall) OnDisconnected(fn func())      { pc.onDisconnected = fn }
 func (pc *PhoneCall) OnStateChange(fn func(string)) { pc.onStateChange = fn }
+
+// OnMigrationRequested fires when the peer ends the 1:1 with a
+// MigrateConferenceCall discard reason — they want to promote the call
+// into an E2E conference. The user is handed the conference link slug
+// and can choose to join it via confcall.Join.
+func (pc *PhoneCall) OnMigrationRequested(fn func(slug string)) {
+	pc.onMigrationRequested = fn
+}
 
 func (pc *PhoneCall) OnIncomingCall(fn func(*IncomingCall)) {
 	pc.onIncoming = fn
@@ -204,6 +213,12 @@ func (pc *PhoneCall) routeCallUpdate(call telegram.PhoneCall) {
 	case *telegram.PhoneCallDiscarded:
 		pc.log.Debugf("[p2p] update: phoneCallDiscarded id=%d reason=%s need_rating=%v need_debug=%v",
 			c.ID, discardReasonName(c.Reason), c.NeedRating, c.NeedDebug)
+		if mig, ok := c.Reason.(*telegram.PhoneCallDiscardReasonMigrateConferenceCall); ok {
+			pc.log.Debugf("[p2p] migrate-to-conference requested: slug=%q", mig.Slug)
+			if pc.onMigrationRequested != nil {
+				pc.onMigrationRequested(mig.Slug)
+			}
+		}
 		select {
 		case pc.discarded <- c:
 		default:
@@ -239,6 +254,8 @@ func discardReasonName(r telegram.PhoneCallDiscardReason) string {
 		return "disconnect"
 	case *telegram.PhoneCallDiscardReasonHangup:
 		return "hangup"
+	case *telegram.PhoneCallDiscardReasonMigrateConferenceCall:
+		return "migrate-to-conference"
 	default:
 		return fmt.Sprintf("%T", r)
 	}

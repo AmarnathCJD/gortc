@@ -21,6 +21,22 @@ type Dispatcher struct {
 
 	audio *webrtc.TrackLocalStaticRTP
 	video *webrtc.TrackLocalStaticRTP
+
+	encMu          sync.RWMutex
+	audioPayloadFn func(p *wutil.RtpPacket) error
+	videoPayloadFn func(p *wutil.RtpPacket) error
+}
+
+func (d *Dispatcher) SetAudioPayloadEncoder(fn func(p *wutil.RtpPacket) error) {
+	d.encMu.Lock()
+	d.audioPayloadFn = fn
+	d.encMu.Unlock()
+}
+
+func (d *Dispatcher) SetVideoPayloadEncoder(fn func(p *wutil.RtpPacket) error) {
+	d.encMu.Lock()
+	d.videoPayloadFn = fn
+	d.encMu.Unlock()
 }
 
 func NewDispatcher(audio, video *webrtc.TrackLocalStaticRTP) *Dispatcher {
@@ -76,6 +92,14 @@ func (d *Dispatcher) run() {
 			select {
 			case p := <-d.audioCh:
 				if d.audio != nil {
+					d.encMu.RLock()
+					fn := d.audioPayloadFn
+					d.encMu.RUnlock()
+					if fn != nil {
+						if err := fn(p); err != nil {
+							continue
+						}
+					}
 					_ = d.audio.WriteRTP(p)
 				}
 				continue
@@ -88,6 +112,15 @@ func (d *Dispatcher) run() {
 			select {
 			case p := <-d.videoCh:
 				if d.video != nil {
+					d.encMu.RLock()
+					fn := d.videoPayloadFn
+					d.encMu.RUnlock()
+					if fn != nil {
+						if err := fn(p); err != nil {
+							budget = 0
+							continue
+						}
+					}
 					_ = d.video.WriteRTP(p)
 				}
 				budget -= len(p.Payload)
