@@ -2,12 +2,14 @@ package main
 
 import (
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 
 	"github.com/amarnathcjd/gortc"
+	"github.com/amarnathcjd/gortc/logger"
 
 	"github.com/amarnathcjd/gogram/telegram"
 )
@@ -57,7 +59,7 @@ func main() {
 		client:    botClient,
 		assistant: assistant,
 		mgr:       newManager(),
-		logLevel:  gortc.WithLogger(gortc.NewLogger()),
+		logLevel:  gortc.WithLogger(gortc.NewLogger(logger.WithLevel(slog.LevelDebug))),
 		downDir:   downDir,
 	}
 	b.register()

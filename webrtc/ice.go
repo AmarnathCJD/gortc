@@ -780,14 +780,14 @@ func (a *Agent) setSelectedPair(pair *CandidatePair) {
 	if pair == nil {
 		var nilPair *CandidatePair
 		a.selectedPair.Store(nilPair)
-		a.log.Tracef("Unset selected candidate pair")
+		a.log.Debugf("Unset selected candidate pair")
 
 		return
 	}
 
 	pair.nominated = true
 	a.selectedPair.Store(pair)
-	a.log.Tracef("Set selected candidate pair: %s", pair)
+	a.log.Debugf("Set selected candidate pair: %s", pair)
 
 	a.onConnectedOnce.Do(func() { close(a.onConnected) })
 
@@ -811,7 +811,7 @@ func (a *Agent) pingAllCandidates() {
 		}
 
 		if p.bindingRequestCount > a.maxBindingRequests {
-			a.log.Tracef("Maximum requests reached for pair %s, marking it as failed", p)
+			a.log.Debugf("Maximum requests (%d) reached for pair %s, marking it as failed", p.bindingRequestCount, p)
 			p.state = CandidatePairStateFailed
 		} else {
 			a.getSelector().PingCandidate(p.Local, p.Remote)
@@ -1430,7 +1430,7 @@ func (a *Agent) findRemoteCandidate(networkType NetworkType, addr net.Addr) Cand
 }
 
 func (a *Agent) sendBindingRequest(msg *stun.Message, local, remote Candidate) {
-	a.log.Tracef("Ping STUN from %s to %s", local, remote)
+	a.log.Debugf("STUN binding request -> from %s to %s (txid=%x)", local, remote, msg.TransactionID)
 
 	var nominationValue *uint32
 	var nomination NominationAttribute
@@ -1598,8 +1598,8 @@ func (a *Agent) handleInboundResponse(
 func (a *Agent) handleInboundRequest(
 	remoteCandidate, local Candidate, remote net.Addr, msg *stun.Message,
 ) (remoteCand Candidate, ok bool) {
-	a.log.Tracef(
-		"Inbound STUN (Request) from %s to %s, useCandidate: %v",
+	a.log.Debugf(
+		"STUN binding request <- from %s to %s, useCandidate=%v",
 		remote,
 		local,
 		msg.Contains(stun.AttrUseCandidate),
@@ -6634,7 +6634,7 @@ func (s *controllingSelector) HandleSuccessResponse(m *stun.Message, local, remo
 		return
 	}
 
-	s.log.Tracef("Inbound STUN (SuccessResponse) from %s to %s", remote, local)
+	s.log.Debugf("STUN binding response <- from %s to %s rtt=%s", remote, local, rtt)
 	pair := s.agent.findPair(local, remote)
 
 	if pair == nil {
@@ -6644,8 +6644,11 @@ func (s *controllingSelector) HandleSuccessResponse(m *stun.Message, local, remo
 		return
 	}
 
+	prevState := pair.state
 	pair.state = CandidatePairStateSucceeded
-	s.log.Tracef("Found valid candidate pair: %s", pair)
+	if prevState != CandidatePairStateSucceeded {
+		s.log.Debugf("Pair state %s -> Succeeded: %s", prevState, pair)
+	}
 
 	if pendingRequest.isUseCandidate {
 		selectedPair := s.agent.getSelectedPair()
@@ -6833,7 +6836,7 @@ func (s *controlledSelector) HandleSuccessResponse(m *stun.Message, local, remot
 		return
 	}
 
-	s.log.Tracef("Inbound STUN (SuccessResponse) from %s to %s", remote, local)
+	s.log.Debugf("STUN binding response <- from %s to %s rtt=%s", remote, local, rtt)
 
 	pair := s.agent.findPair(local, remote)
 	if pair == nil {
@@ -6843,8 +6846,11 @@ func (s *controlledSelector) HandleSuccessResponse(m *stun.Message, local, remot
 		return
 	}
 
+	prevState := pair.state
 	pair.state = CandidatePairStateSucceeded
-	s.log.Tracef("Found valid candidate pair: %s", pair)
+	if prevState != CandidatePairStateSucceeded {
+		s.log.Debugf("Pair state %s -> Succeeded: %s", prevState, pair)
+	}
 	if pair.nominateOnBindingSuccess {
 		if selectedPair := s.agent.getSelectedPair(); selectedPair == nil ||
 			(selectedPair != pair &&

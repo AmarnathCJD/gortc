@@ -137,6 +137,7 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 	gc.installParticipantHandler()
 	const maxAttempts = 3
 	var lastErr error
+	var cachedServerResponse string
 	backoff := 2 * time.Second
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -146,9 +147,16 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 			gc.log.Infof("rejoining (attempt %d/%d)", attempt, maxAttempts)
 			gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
 		}
-		err := gc.joinOnce(ctx, chatID)
+		reuse := ""
+		if attempt == 2 {
+			reuse = cachedServerResponse
+		}
+		gotResp, err := gc.joinOnce(ctx, chatID, reuse)
 		if err == nil {
 			return nil
+		}
+		if gotResp != "" {
+			cachedServerResponse = gotResp
 		}
 		lastErr = err
 		gc.log.Warnf("join attempt %d failed: %v", attempt, err)
@@ -172,10 +180,10 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 	return fmt.Errorf("join failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
-func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
+func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerResponse string) (string, error) {
 	call, err := gc.client.GetGroupCall(chatID)
 	if err != nil {
-		return fmt.Errorf("get group call: %w", err)
+		return "", fmt.Errorf("get group call: %w", err)
 	}
 	gc.call = call
 
@@ -212,7 +220,7 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 	})
 
 	if err := gc.conn.Open(); err != nil {
-		return fmt.Errorf("open connection: %w", err)
+		return "", fmt.Errorf("open connection: %w", err)
 	}
 
 	gc.conn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
@@ -224,13 +232,13 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 
 	track, err := gc.conn.AddAudioTrack()
 	if err != nil {
-		return fmt.Errorf("add audio track: %w", err)
+		return "", fmt.Errorf("add audio track: %w", err)
 	}
 	gc.audioTrack = track
 
 	videoTrack, err := gc.conn.AddVideoTrack(gc.videoCodecMime)
 	if err != nil {
-		return fmt.Errorf("add video track: %w", err)
+		return "", fmt.Errorf("add video track: %w", err)
 	}
 	gc.videoTrack = videoTrack
 
@@ -244,46 +252,51 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any) error {
 
 	joinPayload, err := gc.conn.GetJoinPayload()
 	if err != nil {
-		return fmt.Errorf("get join payload: %w", err)
+		return "", fmt.Errorf("get join payload: %w", err)
 	}
 
 	gc.log.Debugf("join payload: %s", joinPayload)
 
-	me, err := gc.client.GetMe()
-	if err != nil {
-		return fmt.Errorf("get me: %w", err)
-	}
+	serverResponse := reuseServerResponse
+	if serverResponse != "" {
+		gc.log.Infof("reusing cached server response (skipping PhoneJoinGroupCall to avoid flood)")
+	} else {
+		me, err := gc.client.GetMe()
+		if err != nil {
+			return "", fmt.Errorf("get me: %w", err)
+		}
 
-	updates, err := gc.client.PhoneJoinGroupCall(&telegram.PhoneJoinGroupCallParams{
-		Call:   *call,
-		JoinAs: &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
-		Params: &telegram.DataJson{Data: joinPayload},
-		Muted:  false,
-	})
-	if err != nil {
-		return fmt.Errorf("join group call: %w", err)
-	}
+		updates, err := gc.client.PhoneJoinGroupCall(&telegram.PhoneJoinGroupCallParams{
+			Call:   *call,
+			JoinAs: &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
+			Params: &telegram.DataJson{Data: joinPayload},
+			Muted:  false,
+		})
+		if err != nil {
+			return "", fmt.Errorf("join group call: %w", err)
+		}
 
-	serverResponse, err := extractConnectionParams(updates)
-	if err != nil {
-		return fmt.Errorf("extract connection params: %w", err)
+		serverResponse, err = extractConnectionParams(updates)
+		if err != nil {
+			return "", fmt.Errorf("extract connection params: %w", err)
+		}
 	}
 
 	gc.log.Debugf("server response: %s", serverResponse)
 
 	if err := gc.conn.Connect(serverResponse); err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return serverResponse, fmt.Errorf("connect: %w", err)
 	}
 
 	select {
 	case <-connected:
-		return nil
+		return serverResponse, nil
 	case <-disconnected:
-		return fmt.Errorf("%w: disconnected before connected (ICE failed)", errRetryable)
+		return serverResponse, fmt.Errorf("%w: disconnected before connected (ICE failed)", errRetryable)
 	case <-ctx.Done():
-		return ctx.Err()
+		return serverResponse, ctx.Err()
 	case <-time.After(10 * time.Second):
-		return fmt.Errorf("%w: timed out waiting for connected state", errRetryable)
+		return serverResponse, fmt.Errorf("%w: timed out waiting for connected state", errRetryable)
 	}
 }
 
@@ -416,7 +429,7 @@ func (gc *GroupCall) reconnectLoop(chatID any, p reconnectPolicy) {
 		gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := gc.joinOnce(ctx, chatID)
+		_, err := gc.joinOnce(ctx, chatID, "")
 		cancel()
 		if err == nil {
 			gc.log.Infof("reconnected after %d attempt(s)", attempt)
