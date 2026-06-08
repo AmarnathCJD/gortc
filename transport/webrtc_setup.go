@@ -62,21 +62,6 @@ func BuildMediaEngine() (*webrtc.MediaEngine, error) {
 		return nil, fmt.Errorf("register opus codec: %w", err)
 	}
 
-	audioExtensions := []string{
-		"urn:ietf:params:rtp-hdrext:ssrc-audio-level",
-		"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
-		"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
-		"urn:ietf:params:rtp-hdrext:sdes:mid",
-	}
-	for _, uri := range audioExtensions {
-		if err := m.RegisterHeaderExtension(
-			webrtc.RTPHeaderExtensionCapability{URI: uri},
-			webrtc.RTPCodecTypeAudio,
-		); err != nil {
-			return nil, fmt.Errorf("register audio header extension %s: %w", uri, err)
-		}
-	}
-
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: VideoCodecCapability(),
 		PayloadType:        100,
@@ -89,6 +74,20 @@ func BuildMediaEngine() (*webrtc.MediaEngine, error) {
 		PayloadType:        102,
 	}, webrtc.RTPCodecTypeVideo); err != nil {
 		return nil, fmt.Errorf("register vp9 codec: %w", err)
+	}
+
+	audioExtensions := []string{
+		"urn:ietf:params:rtp-hdrext:ssrc-audio-level",
+		"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+		"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+	}
+	for _, uri := range audioExtensions {
+		if err := m.RegisterHeaderExtension(
+			webrtc.RTPHeaderExtensionCapability{URI: uri},
+			webrtc.RTPCodecTypeAudio,
+		); err != nil {
+			return nil, fmt.Errorf("register audio header extension %s: %w", uri, err)
+		}
 	}
 
 	videoExtensions := []string{
@@ -127,6 +126,7 @@ func BuildSettingEngine() webrtc.SettingEngine {
 	)
 	se.SetSTUNGatherTimeout(8 * time.Second)
 	se.SetSrflxAcceptanceMinWait(0)
+	se.SetHandleUndeclaredSSRCWithoutAnswer(true)
 	se.SetNetworkTypes([]webrtc.NetworkType{
 		webrtc.NetworkTypeUDP4,
 	})

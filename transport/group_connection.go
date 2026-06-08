@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/amarnathcjd/gortc/logger"
+	wutil "github.com/amarnathcjd/gortc/webrtc"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 )
 
@@ -126,6 +127,8 @@ type GroupConnection struct {
 	onConnected    func()
 	onDisconnected func()
 	onStateChange  func(string)
+	onICEFailed    func()
+	iceFailedOnce  sync.Once
 	state          string
 
 	srflxReady chan struct{}
@@ -153,6 +156,9 @@ func (gc *GroupConnection) generateSsrcs() {
 		gc.outgoingAudioSsrc = 1
 	}
 	gc.outgoingVideoSsrc = gc.outgoingAudioSsrc + 1
+	if gc.outgoingVideoSsrc > 0x7ffffff0 {
+		gc.outgoingVideoSsrc = 2
+	}
 
 	numLayers := 3
 	var simSsrcs []int32
@@ -267,10 +273,13 @@ func (gc *GroupConnection) Open() error {
 			statsPollStop = stop
 			go gc.pollICEStats(pc, stop)
 
-			iceStuckTimer = time.AfterFunc(15*time.Second, func() {
-				gc.log.Warnf("ICE stuck in checking for 15s, closing PeerConnection so caller can rejoin")
-				_ = pc.Close()
+			iceStuckTimer = time.AfterFunc(12*time.Second, func() {
+				gc.log.Warnf("[ice] stuck in checking for 12s; Telegram edge server unreachable — signalling rejoin")
+				gc.fireICEFailed()
 			})
+		}
+		if state == webrtc.ICEConnectionStateFailed {
+			gc.fireICEFailed()
 		}
 	})
 
@@ -301,19 +310,30 @@ func (gc *GroupConnection) pollICEStats(pc *webrtc.PeerConnection, stop <-chan s
 			return
 		case <-ticker.C:
 		}
-		pairs := 0
+		pairs, failed, anyResp := 0, 0, false
+		var reqSent, respRecv uint64
 		for _, s := range pc.GetStats() {
 			cp, ok := s.(webrtc.ICECandidatePairStats)
 			if !ok {
 				continue
 			}
 			pairs++
-			gc.log.Debugf("[ice-debug] pair state=%s nominated=%t sent=%d recv=%d (req sent=%d resp recv=%d)",
-				cp.State, cp.Nominated, cp.PacketsSent, cp.PacketsReceived,
-				cp.RequestsSent, cp.ResponsesReceived)
+			reqSent += cp.RequestsSent
+			respRecv += cp.ResponsesReceived
+			if cp.ResponsesReceived > 0 {
+				anyResp = true
+			}
+			if cp.State == webrtc.StatsICECandidatePairStateFailed {
+				failed++
+			}
 		}
 		if pairs == 0 {
-			gc.log.Debugf("[ice-debug] no candidate pairs formed yet (remote candidates may be missing/unreachable)")
+			gc.log.Debugf("[ice] no candidate pairs yet (remote candidates may be unreachable)")
+			continue
+		}
+		gc.log.Debugf("[ice] pairs=%d failed=%d req_sent=%d resp_recv=%d", pairs, failed, reqSent, respRecv)
+		if failed == pairs && !anyResp {
+			gc.log.Warnf("[ice] all %d candidate pairs failed, no STUN responses from Telegram (edge server unreachable from this NAT)", pairs)
 		}
 	}
 }
@@ -357,19 +377,28 @@ func (gc *GroupConnection) GetJoinPayload() (string, error) {
 	localDesc := gc.pc.LocalDescription()
 	ufrag, pwd, fingerprint, hash := extractSDPParams(localDesc.SDP)
 
-	audioSSRC, videoSSRC := extractAudioVideoSSRCs(localDesc.SDP)
-	if audioSSRC != 0 {
-		gc.outgoingAudioSsrc = audioSSRC
-		gc.log.Debugf("using audio SSRC from offer: %d", audioSSRC)
+	if gc.audioSender != nil {
+		if enc := gc.audioSender.GetParameters().Encodings; len(enc) > 0 && enc[0].SSRC != 0 {
+			bound := uint32(enc[0].SSRC)
+			if bound != gc.outgoingAudioSsrc {
+				gc.log.Warnf("audio SSRC drift: generated=%d bound=%d — advertising bound value", gc.outgoingAudioSsrc, bound)
+			}
+			gc.outgoingAudioSsrc = bound
+		}
 	}
-	if videoSSRC != 0 {
-		gc.outgoingVideoSsrc = videoSSRC
-		gc.videoSsrcGroups = gc.videoSsrcGroups[:0]
-		gc.videoSsrcGroups = append(gc.videoSsrcGroups, SsrcGroup{
-			Semantics: "FID",
-			Sources:   []int32{int32(videoSSRC), int32(videoSSRC + 1)},
-		})
-		gc.log.Debugf("using video SSRC from offer: %d (FID rtx=%d)", videoSSRC, videoSSRC+1)
+	gc.log.Debugf("advertising audio SSRC=%d (matches wire)", gc.outgoingAudioSsrc)
+
+	if gc.videoSender != nil {
+		if enc := gc.videoSender.GetParameters().Encodings; len(enc) > 0 && enc[0].SSRC != 0 {
+			videoSSRC := uint32(enc[0].SSRC)
+			gc.outgoingVideoSsrc = videoSSRC
+			gc.videoSsrcGroups = gc.videoSsrcGroups[:0]
+			gc.videoSsrcGroups = append(gc.videoSsrcGroups, SsrcGroup{
+				Semantics: "FID",
+				Sources:   []int32{int32(videoSSRC), int32(videoSSRC + 1)},
+			})
+			gc.log.Debugf("advertising video SSRC=%d (FID rtx=%d)", videoSSRC, videoSSRC+1)
+		}
 	}
 
 	payload := JoinPayload{
@@ -461,12 +490,17 @@ func (gc *GroupConnection) AddAudioTrack() (*webrtc.TrackLocalStaticRTP, error) 
 		return nil, fmt.Errorf("create audio track: %w", err)
 	}
 
-	sender, err := gc.pc.AddTrack(track)
+	transceiver, err := gc.pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionSendrecv,
+		SendEncodings: []webrtc.RTPEncodingParameters{
+			{RTPCodingParameters: webrtc.RTPCodingParameters{SSRC: webrtc.SSRC(gc.outgoingAudioSsrc)}},
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("add audio track: %w", err)
 	}
 	gc.audioTrack = track
-	gc.audioSender = sender
+	gc.audioSender = transceiver.Sender()
 	gc.tryStartDispatcher()
 	return track, nil
 }
@@ -508,7 +542,7 @@ func (gc *GroupConnection) tryStartDispatcher() {
 	if gc.dispatcher != nil {
 		return
 	}
-	if gc.audioTrack == nil || gc.videoTrack == nil {
+	if gc.audioTrack == nil && gc.videoTrack == nil {
 		return
 	}
 	gc.dispatcher = NewDispatcher(gc.audioTrack, gc.videoTrack)
@@ -529,6 +563,18 @@ func (gc *GroupConnection) OnDisconnected(handler func()) {
 
 func (gc *GroupConnection) OnStateChange(handler func(string)) {
 	gc.onStateChange = handler
+}
+
+func (gc *GroupConnection) OnICEFailed(handler func()) {
+	gc.onICEFailed = handler
+}
+
+func (gc *GroupConnection) fireICEFailed() {
+	gc.iceFailedOnce.Do(func() {
+		if gc.onICEFailed != nil {
+			go gc.onICEFailed()
+		}
+	})
 }
 
 func (gc *GroupConnection) State() string {
@@ -554,6 +600,54 @@ func (gc *GroupConnection) PeerConnection() *webrtc.PeerConnection {
 
 func (gc *GroupConnection) OutgoingAudioSsrc() uint32 {
 	return gc.outgoingAudioSsrc
+}
+
+func (gc *GroupConnection) StartAudioRTCP() {
+	go func() {
+		sendSR := func() bool {
+			gc.mu.Lock()
+			pc := gc.pc
+			d := gc.dispatcher
+			ssrc := gc.outgoingAudioSsrc
+			gc.mu.Unlock()
+			if pc == nil || d == nil {
+				return false
+			}
+			if pc.ConnectionState() == webrtc.PeerConnectionStateClosed ||
+				pc.ConnectionState() == webrtc.PeerConnectionStateFailed {
+				return false
+			}
+			lastTS, pkts, octets := d.AudioStats()
+			if pkts == 0 {
+				return true
+			}
+			sr := &wutil.RtcpSenderReport{
+				SSRC:        ssrc,
+				NTPTime:     wutil.NowNTP(),
+				RTPTime:     lastTS,
+				PacketCount: pkts,
+				OctetCount:  octets,
+			}
+			if err := pc.WriteRTCP([]wutil.RtcpPacket{sr}); err != nil {
+				gc.log.Debugf("[rtcp] write SR: %v", err)
+			}
+			return true
+		}
+		for range 5 {
+			if !sendSR() {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !sendSR() {
+				return
+			}
+		}
+	}()
 }
 
 func (gc *GroupConnection) OutgoingVideoSsrc() uint32 {

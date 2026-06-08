@@ -610,3 +610,11 @@ func (h *av1FMTP) Parameter(key string) (string, bool) {
 
 	return v, ok
 }
+
+func NowNTP() uint64 {
+	const ntpEpochOffset = 2208988800 
+	now := time.Now()
+	secs := uint64(now.Unix()) + ntpEpochOffset
+	frac := uint64(now.Nanosecond()) << 32 / 1e9
+	return secs<<32 | frac
+}
