@@ -3,36 +3,24 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
-// Package confcall implements Telegram E2E-encrypted conference calls,
-// the "spontaneous group call without a chat" feature introduced in
-// April 2025. Unlike groupcall (which trusts the SFU), confcall layers
-// an Ed25519-signed append-only chain over the call to derive a per-call
-// shared key, and wraps every RTP payload with per-packet authenticated
-// encryption that the server cannot read.
-//
-// Quick start:
-//
-//	cc := confcall.New(client, confcall.WithLogLevel(slog.LevelDebug))
-//	slug, _ := cc.Create(ctx, true)
-//	log.Printf("share: t.me/call/%s", slug)
-//	cc.OnEmojiReady = func(em []string) { log.Printf("verify: %v", em) }
+// Package confcall implements Telegram E2E-encrypted conference calls.
 package confcall
 
 import (
+	"context"
 	"crypto/ed25519"
 	"log/slog"
 	"sync"
 
 	"github.com/amarnathcjd/gogram/telegram"
 	"github.com/amarnathcjd/gortc/confcall/e2e"
-	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/media"
 	"github.com/amarnathcjd/gortc/transport"
 )
 
 type Option func(*ConferenceCall)
 
-func WithLogger(l *logger.Logger) Option {
+func WithLogger(l *transport.Logger) Option {
 	return func(cc *ConferenceCall) {
 		if l != nil {
 			cc.log = l
@@ -42,24 +30,31 @@ func WithLogger(l *logger.Logger) Option {
 
 func WithLogLevel(level slog.Level) Option {
 	return func(cc *ConferenceCall) {
-		cc.log = logger.New(logger.WithLevel(level))
+		cc.log = transport.NewLogger(transport.WithLogLevel(level))
 	}
 }
 
 type ConferenceCall struct {
 	client *telegram.Client
-	log    *logger.Logger
+	log    *transport.Logger
 
-	mu      sync.Mutex
-	call    *telegram.InputGroupCallObj
-	slug    string
-	conn    *transport.GroupConnection
-	chain   *e2e.Chain
-	verify  *e2e.VerificationChain
-	cipher  *e2e.PacketCipher
-	signer  ed25519.PrivateKey
-	pubKey  ed25519.PublicKey
-	selfUID int64
+	mu     sync.Mutex
+	call   *telegram.InputGroupCallObj
+	slug   string
+	conn   *transport.GroupConnection
+	chain  *e2e.Chain
+	verify *e2e.VerificationChain
+	cipher *e2e.PacketCipher
+
+	signer ed25519.PrivateKey
+	pubKey ed25519.PublicKey
+
+	selfUID               int64
+	chainOffsets          map[int32]int32
+	lastEmojis            string
+	sourceToUID           map[int32]int64
+	flushingBroadcasts    bool
+	lastReestablishHeight int32
 
 	handlersOnce sync.Once
 
@@ -67,6 +62,7 @@ type ConferenceCall struct {
 	OnConnected              func()
 	OnDisconnected           func()
 	OnStateChange            func(string)
+	OnICEFailed              func()
 	OnEmojiReady             func([]string)
 	OnBlockApplied           func(height int)
 	OnTrack                  func(*media.IncomingTrack)
@@ -74,10 +70,7 @@ type ConferenceCall struct {
 }
 
 func New(client *telegram.Client, opts ...Option) *ConferenceCall {
-	cc := &ConferenceCall{
-		client: client,
-		log:    logger.New(),
-	}
+	cc := &ConferenceCall{client: client, log: transport.NewLogger()}
 	for _, o := range opts {
 		o(cc)
 	}
@@ -111,4 +104,24 @@ func (cc *ConferenceCall) EmojiFingerprint() []string {
 		return nil
 	}
 	return cc.chain.EmojiFingerprint()
+}
+
+// IncomingConferenceCall represents a ringing MessageActionConferenceCall.
+type IncomingConferenceCall struct {
+	cc     *ConferenceCall
+	msgID  int32
+	callID int64
+	video  bool
+}
+
+func (ic *IncomingConferenceCall) MessageID() int32 { return ic.msgID }
+func (ic *IncomingConferenceCall) CallID() int64    { return ic.callID }
+func (ic *IncomingConferenceCall) Video() bool      { return ic.video }
+
+func (ic *IncomingConferenceCall) Accept(ctx context.Context) error {
+	return ic.cc.JoinFromInvite(ctx, ic.msgID)
+}
+
+func (ic *IncomingConferenceCall) Decline(ctx context.Context) error {
+	return ic.cc.Decline(ctx, ic.msgID)
 }

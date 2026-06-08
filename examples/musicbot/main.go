@@ -9,7 +9,6 @@ import (
 	"syscall"
 
 	"github.com/amarnathcjd/gortc"
-	"github.com/amarnathcjd/gortc/transport"
 
 	"github.com/amarnathcjd/gogram/telegram"
 )
@@ -59,7 +58,7 @@ func main() {
 		client:    botClient,
 		assistant: assistant,
 		mgr:       newManager(),
-		logLevel:  gortc.WithLogger(gortc.NewLogger(transport.WithLogLevel(slog.LevelDebug))),
+		logLevel:  gortc.WithLogger(gortc.NewLogger(slog.LevelDebug)),
 		downDir:   downDir,
 	}
 	b.register()

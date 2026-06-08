@@ -25,12 +25,13 @@ package gortc
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/amarnathcjd/gortc/confcall"
 	"github.com/amarnathcjd/gortc/groupcall"
-	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/media"
 	"github.com/amarnathcjd/gortc/phonecall"
+	"github.com/amarnathcjd/gortc/transport"
 
 	"github.com/amarnathcjd/gogram/telegram"
 )
@@ -38,28 +39,52 @@ import (
 var errNotInCall = errors.New("gortc: not in a call")
 
 type (
-	Logger         = logger.Logger
+	Logger         = transport.Logger
 	Source         = media.Source
 	SeekableSource = media.SeekableSource
 	EncodeOptions  = media.EncodeOptions
 	Player         = media.Player
 	Track          = media.Track
+	IncomingTrack  = media.IncomingTrack
+	TrackKind      = media.TrackKind
+
+	Option           = groupcall.Option
+	PhoneOption      = phonecall.Option
+	ConferenceOption = confcall.Option
+
+	PhoneCall              = phonecall.PhoneCall
+	IncomingCall           = phonecall.IncomingCall
+	ConferenceCall         = confcall.ConferenceCall
+	IncomingConferenceCall = confcall.IncomingConferenceCall
+
+	Participant       = groupcall.Participant
+	ParticipantEvent  = groupcall.ParticipantEvent
+	BandwidthEstimate = groupcall.BandwidthEstimate
 )
 
 const (
-	TrackAudio = media.TrackAudio
-	TrackVideo = media.TrackVideo
+	TrackAudio     = media.TrackAudio
+	TrackVideo     = media.TrackVideo
+	TrackKindAudio = media.TrackKindAudio
+	TrackKindVideo = media.TrackKindVideo
+
+	VideoCodecVP8 = media.VideoCodecVP8
+	VideoCodecVP9 = media.VideoCodecVP9
+	MimeTypeVP8   = "video/VP8"
+	MimeTypeVP9   = "video/VP9"
+
+	ParticipantJoined  = groupcall.ParticipantJoined
+	ParticipantLeft    = groupcall.ParticipantLeft
+	ParticipantUpdated = groupcall.ParticipantUpdated
 )
 
-var ErrNotSeekable = media.ErrNotSeekable
-
 var (
+	ErrNotSeekable = media.ErrNotSeekable
+
 	Res480  = media.Res480
 	Res720  = media.Res720
 	Res1080 = media.Res1080
-)
 
-var (
 	FromFile     = media.FromFile
 	FromURL      = media.FromURL
 	FromReader   = media.FromReader
@@ -70,118 +95,84 @@ var (
 	FromRawVideo = media.FromRawVideo
 	Loop         = media.Loop
 	Concat       = media.Concat
-)
 
-type Option = groupcall.Option
-
-var (
 	WithLogger     = groupcall.WithLogger
 	WithLogLevel   = groupcall.WithLogLevel
 	WithReconnect  = groupcall.WithReconnect
 	WithVideoCodec = groupcall.WithVideoCodec
+
+	WithPhoneLogger   = phonecall.WithLogger
+	WithPhoneLogLevel = phonecall.WithLogLevel
+
+	WithConferenceLogger   = confcall.WithLogger
+	WithConferenceLogLevel = confcall.WithLogLevel
 )
 
-const (
-	VideoCodecVP8 = media.VideoCodecVP8
-	VideoCodecVP9 = media.VideoCodecVP9
-)
+// NewLogger builds a Logger that writes at the given slog level (e.g.
+// slog.LevelDebug). Pass it to WithLogger / WithPhoneLogger / WithConferenceLogger.
+func NewLogger(level slog.Level) *Logger {
+	return transport.NewLogger(transport.WithLogLevel(level))
+}
 
-const (
-	MimeTypeVP8 = "video/VP8"
-	MimeTypeVP9 = "video/VP9"
-)
+// NewCall constructs a group-call handle (regular voice chat / livestream).
+func NewCall(client *telegram.Client, opts ...Option) *Call {
+	return &Call{gc: groupcall.New(client, opts...)}
+}
 
-type (
-	Participant       = groupcall.Participant
-	ParticipantEvent  = groupcall.ParticipantEvent
-	BandwidthEstimate = groupcall.BandwidthEstimate
-)
+// NewPhoneCall constructs a 1:1 phone-call handle.
+func NewPhoneCall(client *telegram.Client, opts ...PhoneOption) *PhoneCall {
+	return phonecall.New(client, opts...)
+}
 
-const (
-	ParticipantJoined  = groupcall.ParticipantJoined
-	ParticipantLeft    = groupcall.ParticipantLeft
-	ParticipantUpdated = groupcall.ParticipantUpdated
-)
-
-func NewLogger(opts ...logger.Option) *Logger { return logger.New(opts...) }
+// NewConferenceCall constructs an E2E conference-call handle. Use Create to
+// start a new call (and get a shareable slug) or Join/JoinFromInvite to join one.
+func NewConferenceCall(client *telegram.Client, opts ...ConferenceOption) *ConferenceCall {
+	return confcall.New(client, opts...)
+}
 
 // Call is a single Telegram group-call session.
 type Call struct {
 	gc *groupcall.GroupCall
 }
 
-func NewCall(client *telegram.Client, opts ...Option) *Call {
-	return &Call{gc: groupcall.New(client, opts...)}
-}
-
-func (c *Call) OnConnected(fn func()) { c.gc.OnConnected = fn }
-
-func (c *Call) OnDisconnected(fn func()) { c.gc.OnDisconnected = fn }
-
-// OnStateChange fires on every connection state transition (new, connecting,
-// connected, disconnected, failed, closed).
-func (c *Call) OnStateChange(fn func(state string)) { c.gc.OnStateChange = fn }
-
-// OnStreamEnded fires when a Stream or Play finishes, with the terminal error
-// (nil on a clean end).
-func (c *Call) OnStreamEnded(fn func(error)) { c.gc.OnStreamEnded = fn }
-
-// OnTrack fires for each remote audio/video track delivered by the SFU. Use
-// the track's Record / RecordToFile to capture incoming media.
-func (c *Call) OnTrack(fn func(*IncomingTrack)) { c.gc.OnTrack = fn }
-
-// OnReconnecting fires before each reconnect attempt with the attempt number.
-func (c *Call) OnReconnecting(fn func(attempt int)) { c.gc.OnReconnecting = fn }
-
-// OnReconnected fires after a successful mid-call reconnect.
-func (c *Call) OnReconnected(fn func()) { c.gc.OnReconnected = fn }
-
-// OnReconnectFailed fires when reconnect retries are exhausted.
-func (c *Call) OnReconnectFailed(fn func(error)) { c.gc.OnReconnectFailed = fn }
-
+func (c *Call) OnConnected(fn func())                          { c.gc.OnConnected = fn }
+func (c *Call) OnDisconnected(fn func())                       { c.gc.OnDisconnected = fn }
+func (c *Call) OnStateChange(fn func(state string))            { c.gc.OnStateChange = fn }
+func (c *Call) OnStreamEnded(fn func(error))                   { c.gc.OnStreamEnded = fn }
+func (c *Call) OnTrack(fn func(*IncomingTrack))                { c.gc.OnTrack = fn }
+func (c *Call) OnReconnecting(fn func(attempt int))            { c.gc.OnReconnecting = fn }
+func (c *Call) OnReconnected(fn func())                        { c.gc.OnReconnected = fn }
+func (c *Call) OnReconnectFailed(fn func(error))               { c.gc.OnReconnectFailed = fn }
 func (c *Call) OnParticipant(fn func(ParticipantEvent, Participant)) {
 	c.gc.OnParticipant = fn
 }
+func (c *Call) OnBandwidthEstimate(fn func(BandwidthEstimate)) { c.gc.OnBandwidthEstimate = fn }
 
-func (c *Call) Participants() []Participant { return c.gc.Participants() }
-
-func (c *Call) OnBandwidthEstimate(fn func(BandwidthEstimate)) {
-	c.gc.OnBandwidthEstimate = fn
-}
-
+func (c *Call) Participants() []Participant          { return c.gc.Participants() }
 func (c *Call) BandwidthEstimate() BandwidthEstimate { return c.gc.BandwidthEstimate() }
+func (c *Call) State() string                        { return c.gc.State() }
 
-// State returns the current connection state.
-func (c *Call) State() string { return c.gc.State() }
-
-// Join joins the group call of the given chat (username, ID, or peer),
-// retrying internally until connected or retries are exhausted.
+// Join joins the group call of the given chat (username, ID, or peer).
 func (c *Call) Join(chatID any) error { return c.gc.JoinCall(context.Background(), chatID) }
 
-// JoinContext is Join with a cancellable context (cancel aborts retries/wait).
+// JoinContext is Join with a cancellable context.
 func (c *Call) JoinContext(ctx context.Context, chatID any) error {
 	return c.gc.JoinCall(ctx, chatID)
 }
 
-// Stream sends a media source into the call, blocking until it ends or ctx is cancelled.
 func (c *Call) Stream(ctx context.Context, src Source) error { return c.gc.Stream(ctx, src) }
-
-// Play starts a media source and returns a controllable Player (pause/resume/stop).
 func (c *Call) Play(ctx context.Context, src Source) *Player { return c.gc.Play(ctx, src) }
 
-// SetVolume sets the bot's own outgoing volume in the call, 0..200 (percent).
+// SetVolume sets the bot's outgoing volume in the call, 0..200 (percent).
 func (c *Call) SetVolume(percent int) error {
 	v := min(max(int32(percent)*100, 1), 20000)
 	return c.editSelf(&telegram.PhoneEditGroupCallParticipantParams{Volume: v})
 }
 
-// SetVideoStopped tells the SFU whether this participant has video, clearing or
-// restoring the remote video placeholder.
 func (c *Call) SetVideoStopped(stopped bool) error {
 	return c.editSelf(&telegram.PhoneEditGroupCallParticipantParams{VideoStopped: stopped})
 }
 
-// SetMuted mutes or unmutes the bot's own outgoing audio in the call.
 func (c *Call) SetMuted(muted bool) error {
 	return c.editSelf(&telegram.PhoneEditGroupCallParticipantParams{Muted: muted})
 }
@@ -201,43 +192,3 @@ func (c *Call) Leave() error { return c.gc.Leave() }
 
 // GroupCall exposes the underlying low-level handle for advanced use.
 func (c *Call) GroupCall() *groupcall.GroupCall { return c.gc }
-
-type (
-	PhoneCall     = phonecall.PhoneCall
-	IncomingCall  = phonecall.IncomingCall
-	PhoneOption   = phonecall.Option
-	IncomingTrack = media.IncomingTrack
-	TrackKind     = media.TrackKind
-)
-
-const (
-	TrackKindAudio = media.TrackKindAudio
-	TrackKindVideo = media.TrackKindVideo
-)
-
-var (
-	WithPhoneLogger   = phonecall.WithLogger
-	WithPhoneLogLevel = phonecall.WithLogLevel
-)
-
-func NewPhoneCall(client *telegram.Client, opts ...PhoneOption) *PhoneCall {
-	return phonecall.New(client, opts...)
-}
-
-type (
-	ConferenceCall           = confcall.ConferenceCall
-	IncomingConferenceCall   = confcall.IncomingConferenceCall
-	ConferenceOption         = confcall.Option
-)
-
-var (
-	WithConferenceLogger   = confcall.WithLogger
-	WithConferenceLogLevel = confcall.WithLogLevel
-)
-
-// NewConferenceCall constructs an E2E conference call handle. Use
-// Create to start a new call (and obtain a shareable slug) or Join /
-// JoinFromInvite to join an existing one.
-func NewConferenceCall(client *telegram.Client, opts ...ConferenceOption) *ConferenceCall {
-	return confcall.New(client, opts...)
-}

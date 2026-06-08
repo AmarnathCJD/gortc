@@ -15,6 +15,8 @@ import (
 	"math/big"
 	"os"
 	"reflect"
+	"sort"
+	"time"
 
 	"github.com/amarnathcjd/gogram/telegram"
 	"github.com/amarnathcjd/gortc/confcall/e2e"
@@ -25,11 +27,9 @@ import (
 )
 
 // Create creates a new conference call. If joinImmediately is true, the
-// caller also joins as the founder and the returned slug can be shared
-// with peers.
+// caller joins as the founder and the returned slug can be shared.
 func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (string, error) {
 	cc.installHandlers()
-
 	if err := cc.ensureSigner(); err != nil {
 		return "", err
 	}
@@ -50,31 +50,14 @@ func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (str
 	cc.chain = chain
 	cc.cipher = e2e.NewPacketCipher(chain, cc.signer)
 	cc.verify = e2e.NewVerificationChain(cc.signer, me.ID)
-	// Kick off the first verification round against the zero block.
-	if err := cc.startVerificationRound(); err != nil {
-		cc.log.Warnf("[conf] start verification round: %v", err)
-	}
 
-	// CONFCALL_NOOP_BLOCK=1 sends a deliberately-invalid noop-only block to
-	// distinguish parser issues (server -504) from validation issues (400
-	// BLOCK_INVALID). Useful while debugging createConferenceCall failures.
-	blockSource := zero
-	if os.Getenv("CONFCALL_NOOP_BLOCK") == "1" {
-		noop, err := e2e.BuildNoopBlock(cc.signer)
-		if err != nil {
-			return "", fmt.Errorf("build noop block: %w", err)
-		}
-		blockSource = noop
-	}
-	encoded, err := e2e.EncodeBlock(blockSource)
+	encoded, err := e2e.EncodeBlock(zero)
 	if err != nil {
 		return "", fmt.Errorf("encode zero block: %w", err)
 	}
 
-	// public_key/block/params are flags.3 fields — only sent when join is set.
-	// muted/video_stopped match TDLib defaults for a fresh join with no AV yet.
 	params := &telegram.PhoneCreateConferenceCallParams{
-		Muted:        true,
+		Muted:        false,
 		VideoStopped: true,
 		Join:         joinImmediately,
 		RandomID:     randomID(),
@@ -108,16 +91,16 @@ func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (str
 	}
 	cc.slug = slug
 	cc.call = callObj
-
-	// The first verification round was kicked off before the call
-	// existed, so its outbound commit hasn't been shipped yet. Flush
-	// now that we have a callObj.
-	cc.flushOutboundBroadcasts()
+	cc.applyUpdates(updates)
 
 	if joinImmediately {
+		if err := cc.unmuteSelf(); err != nil {
+			cc.log.Warnf("[conf] unmute self: %v", err)
+		}
 		if err := cc.attachMediaFromUpdates(updates); err != nil {
 			return slug, fmt.Errorf("attach media: %w", err)
 		}
+		cc.fetchParticipantSources()
 	}
 	return slug, nil
 }
@@ -153,17 +136,40 @@ func (cc *ConferenceCall) Join(ctx context.Context, slug string) error {
 	if err != nil {
 		return fmt.Errorf("get join payload: %w", err)
 	}
-	updates, err := cc.client.PhoneJoinGroupCall(&telegram.PhoneJoinGroupCallParams{
-		Call:   &telegram.InputGroupCallSlug{Slug: slug},
+	callInput := &telegram.InputGroupCallSlug{Slug: slug}
+	_, encodedBlock, err := cc.buildJoinBlock(callInput)
+	if err != nil {
+		return fmt.Errorf("build join block: %w", err)
+	}
+	beforeHeight := cc.chain.Height()
+	params := &telegram.PhoneJoinGroupCallParams{
+		Call:   callInput,
 		JoinAs: &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
+		Block:  encodedBlock,
 		Params: &telegram.DataJson{Data: joinPayload},
-	})
+	}
+	setInt256(&params.PublicKey, cc.pubKey)
+	updates, err := cc.client.PhoneJoinGroupCall(params)
 	if err != nil {
 		return fmt.Errorf("phone.joinGroupCall: %w", err)
+	}
+	call, err := extractInputGroupCallFromUpdates(updates)
+	if err != nil {
+		return err
+	}
+	cc.call = call
+	cc.applyUpdates(updates)
+	if err := cc.waitForServerBlock(callInput, beforeHeight+1); err != nil {
+		cc.log.Warnf("[conf] wait for server join block: %v", err)
+	}
+	if err := cc.unmuteSelf(); err != nil {
+		cc.log.Warnf("[conf] unmute self: %v", err)
 	}
 	if err := cc.attachMediaFromUpdates(updates); err != nil {
 		return fmt.Errorf("attach media: %w", err)
 	}
+	cc.kickVerification()
+	cc.fetchParticipantSources()
 	return nil
 }
 
@@ -182,6 +188,7 @@ func (cc *ConferenceCall) JoinFromInvite(ctx context.Context, msgID int32) error
 	chain.SetSelfUserID(cc.selfUID)
 	cc.chain = chain
 	cc.cipher = e2e.NewPacketCipher(chain, cc.signer)
+	cc.verify = e2e.NewVerificationChain(cc.signer, me.ID)
 
 	conn := transport.NewGroupConnection(cc.log.With("subsystem", "transport"))
 	cc.conn = conn
@@ -195,15 +202,48 @@ func (cc *ConferenceCall) JoinFromInvite(ctx context.Context, msgID int32) error
 	if err != nil {
 		return fmt.Errorf("get join payload: %w", err)
 	}
-	updates, err := cc.client.PhoneJoinGroupCall(&telegram.PhoneJoinGroupCallParams{
-		Call:   &telegram.InputGroupCallInviteMessage{MsgID: msgID},
+	callInput := &telegram.InputGroupCallInviteMessage{MsgID: msgID}
+	_, encodedBlock, err := cc.buildJoinBlock(callInput)
+	if err != nil {
+		return fmt.Errorf("build join block: %w", err)
+	}
+	beforeHeight := cc.chain.Height()
+	params := &telegram.PhoneJoinGroupCallParams{
+		Call:   callInput,
 		JoinAs: &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
+		Block:  encodedBlock,
 		Params: &telegram.DataJson{Data: joinPayload},
-	})
+	}
+	setInt256(&params.PublicKey, cc.pubKey)
+	updates, err := cc.client.PhoneJoinGroupCall(params)
 	if err != nil {
 		return fmt.Errorf("phone.joinGroupCall (invite): %w", err)
 	}
-	return cc.attachMediaFromUpdates(updates)
+	call, err := extractInputGroupCallFromUpdates(updates)
+	if err != nil {
+		return err
+	}
+	cc.call = call
+	cc.applyUpdates(updates)
+	if err := cc.waitForServerBlock(callInput, beforeHeight+1); err != nil {
+		cc.log.Warnf("[conf] wait for server join block (invite): %v", err)
+	}
+	if err := cc.unmuteSelf(); err != nil {
+		cc.log.Warnf("[conf] unmute self: %v", err)
+	}
+	if err := cc.attachMediaFromUpdates(updates); err != nil {
+		return err
+	}
+	cc.kickVerification()
+	return nil
+}
+
+// kickVerification starts a commit-reveal round.
+func (cc *ConferenceCall) kickVerification() {
+	if err := cc.startVerificationRound(); err != nil {
+		cc.log.Warnf("[conf] start verification round: %v", err)
+	}
+	cc.flushOutboundBroadcasts()
 }
 
 // Invite sends a ring to the specified user.
@@ -261,13 +301,22 @@ func (cc *ConferenceCall) Leave(ctx context.Context) error {
 	return firstErr
 }
 
-func (cc *ConferenceCall) buildLeaveBlock(uid int64) ([]byte, error) {
-	// A real leave block updates the GroupState minus self. For the
-	// stub, emit an empty noop — Telegram accepts any well-formed block.
+// Kick removes users from the call and broadcasts the resulting block.
+func (cc *ConferenceCall) Kick(ctx context.Context, userIDs []int64) error {
+	cc.mu.Lock()
+	call := cc.call
+	cc.mu.Unlock()
+	if call == nil {
+		return errors.New("confcall: not in a call")
+	}
 	state := cc.chain.Snapshot()
+	kickSet := make(map[int64]struct{}, len(userIDs))
+	for _, id := range userIDs {
+		kickSet[id] = struct{}{}
+	}
 	keep := make([]e2e.GroupParticipant, 0, len(state.Participants))
 	for _, p := range state.Participants {
-		if p.UserID == uid {
+		if _, ok := kickSet[p.UserID]; ok {
 			continue
 		}
 		var pk [32]byte
@@ -285,13 +334,80 @@ func (cc *ConferenceCall) buildLeaveBlock(uid int64) ([]byte, error) {
 		PrevBlockHash: state.LastBlockHash,
 		Changes:       []e2e.Change{&e2e.ChangeSetGroupState{GroupState: e2e.GroupState{Participants: keep}}},
 	}
-	signedBody, err := e2e.EncodeBlockForSignature(block)
-	if err != nil {
-		return nil, err
+	if err := e2e.SignBlock(cc.signer, block); err != nil {
+		return fmt.Errorf("sign block: %w", err)
 	}
-	sig := ed25519.Sign(cc.signer, signedBody)
-	copy(block.Signature[:], sig)
-	return e2e.EncodeBlock(block)
+	encoded, err := e2e.EncodeBlock(block)
+	if err != nil {
+		return fmt.Errorf("encode block: %w", err)
+	}
+	if err := cc.chain.ApplyBlock(block); err != nil {
+		return fmt.Errorf("apply local: %w", err)
+	}
+	_, err = cc.client.PhoneDeleteConferenceCallParticipants(&telegram.PhoneDeleteConferenceCallParticipantsParams{
+		Kick:  true,
+		Call:  call,
+		Ids:   userIDs,
+		Block: encoded,
+	})
+	return err
+}
+
+// RotateKey emits a fresh shared-key block. Run after any membership change.
+func (cc *ConferenceCall) RotateKey(ctx context.Context) error {
+	cc.mu.Lock()
+	call := cc.call
+	cc.mu.Unlock()
+	if call == nil {
+		return errors.New("confcall: not in a call")
+	}
+	state := cc.chain.Snapshot()
+	parts := make([]e2e.GroupParticipant, 0, len(state.Participants))
+	for _, p := range state.Participants {
+		var pk [32]byte
+		copy(pk[:], p.PublicKey)
+		parts = append(parts, e2e.GroupParticipant{
+			UserID:      p.UserID,
+			PublicKey:   pk,
+			AddUsers:    p.AddUsers,
+			RemoveUsers: p.RemoveUsers,
+			Version:     p.Version,
+		})
+	}
+	sharedKey, err := e2e.BuildSharedKey(parts)
+	if err != nil {
+		return fmt.Errorf("build shared key: %w", err)
+	}
+	var pubArr [32]byte
+	copy(pubArr[:], cc.pubKey)
+	block := &e2e.Block{
+		Height:        state.Height + 1,
+		PrevBlockHash: state.LastBlockHash,
+		Changes: []e2e.Change{
+			&e2e.ChangeSetGroupState{GroupState: e2e.GroupState{Participants: parts, ExternalPermissions: 3}},
+			&e2e.ChangeSetSharedKey{SharedKey: sharedKey},
+		},
+		StateProof:         e2e.StateProof{KVHash: e2e.EmptyKVHash()},
+		SignaturePublicKey: &pubArr,
+	}
+	if err := e2e.SignBlock(cc.signer, block); err != nil {
+		return fmt.Errorf("sign block: %w", err)
+	}
+	encoded, err := e2e.EncodeBlock(block)
+	if err != nil {
+		return fmt.Errorf("encode block: %w", err)
+	}
+
+	beforeHeight := cc.chain.Height()
+	updates, err := cc.client.PhoneSendConferenceCallBroadcast(call, encoded)
+	if err != nil {
+		return err
+	}
+	cc.applyUpdates(updates)
+	if werr := cc.waitForServerBlock(call, beforeHeight+1); werr != nil {
+		cc.log.Warnf("[conf] rotate-key wait: %v", werr)
+	}
+	return nil
 }
 
 // Stream sends a media source into the call, blocking until it ends or ctx is cancelled.
@@ -317,9 +433,49 @@ func (cc *ConferenceCall) Play(ctx context.Context, src media.Source) *media.Pla
 
 // ── helpers ────────────────────────────────────────────────────────────
 
+func (cc *ConferenceCall) buildLeaveBlock(uid int64) ([]byte, error) {
+	state := cc.chain.Snapshot()
+	keep := make([]e2e.GroupParticipant, 0, len(state.Participants))
+	for _, p := range state.Participants {
+		if p.UserID == uid {
+			continue
+		}
+		var pk [32]byte
+		copy(pk[:], p.PublicKey)
+		keep = append(keep, e2e.GroupParticipant{
+			UserID:      p.UserID,
+			PublicKey:   pk,
+			AddUsers:    p.AddUsers,
+			RemoveUsers: p.RemoveUsers,
+			Version:     p.Version,
+		})
+	}
+	block := &e2e.Block{
+		Height:        state.Height + 1,
+		PrevBlockHash: state.LastBlockHash,
+		Changes:       []e2e.Change{&e2e.ChangeSetGroupState{GroupState: e2e.GroupState{Participants: keep}}},
+	}
+	if err := e2e.SignBlock(cc.signer, block); err != nil {
+		return nil, err
+	}
+	return e2e.EncodeBlockForServer(block)
+}
+
 func (cc *ConferenceCall) ensureSigner() error {
 	if cc.signer != nil {
 		return nil
+	}
+	var path string
+	if home, err := os.UserHomeDir(); err == nil {
+		path = home + "/.gortc_confcall_ed25519"
+	}
+	if path != "" {
+		if seed, err := os.ReadFile(path); err == nil && len(seed) == ed25519.SeedSize {
+			priv := ed25519.NewKeyFromSeed(seed)
+			cc.signer = priv
+			cc.pubKey = priv.Public().(ed25519.PublicKey)
+			return nil
+		}
 	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -327,11 +483,17 @@ func (cc *ConferenceCall) ensureSigner() error {
 	}
 	cc.signer = priv
 	cc.pubKey = pub
+	if path != "" {
+		if err := os.WriteFile(path, priv.Seed(), 0600); err != nil {
+			cc.log.Warnf("[conf] persist identity: %v", err)
+		}
+	}
 	return nil
 }
 
 func (cc *ConferenceCall) prepareLocalMedia() error {
 	cc.conn.OnConnected(func() {
+		cc.conn.StartAudioRTCP()
 		if cc.OnConnected != nil {
 			cc.OnConnected()
 		}
@@ -346,19 +508,44 @@ func (cc *ConferenceCall) prepareLocalMedia() error {
 			cc.OnStateChange(s)
 		}
 	})
+	cc.conn.OnICEFailed(func() {
+		if cc.OnICEFailed != nil {
+			cc.OnICEFailed()
+		}
+	})
 	if _, err := cc.conn.AddAudioTrack(); err != nil {
 		return fmt.Errorf("add audio track: %w", err)
 	}
-	if _, err := cc.conn.AddVideoTrack(""); err != nil {
-		return fmt.Errorf("add video track: %w", err)
-	}
 	cc.attachCipherToDispatcher()
 	cc.conn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if track.Kind() == webrtc.RTPCodecTypeAudio {
+			go cc.decodeIncomingAudio(track)
+		}
 		if cc.OnTrack != nil {
 			cc.OnTrack(media.NewIncomingTrack(track))
 		}
 	})
 	return nil
+}
+
+func (cc *ConferenceCall) decodeIncomingAudio(track *webrtc.TrackRemote) {
+	ssrc := uint32(track.SSRC())
+	for {
+		pkt, _, err := track.ReadRTP()
+		if err != nil {
+			return
+		}
+		if cc.cipher == nil || len(pkt.Payload) == 0 {
+			continue
+		}
+		pub, _, found := cc.pubKeyForSSRC(ssrc)
+		if !found {
+			continue
+		}
+		if _, derr := cc.cipher.DecryptIncomingPacket(pkt.Payload, pub); derr != nil {
+			continue
+		}
+	}
 }
 
 func (cc *ConferenceCall) attachMediaFromUpdates(updates telegram.Updates) error {
@@ -377,26 +564,124 @@ func (cc *ConferenceCall) attachCipherToDispatcher() {
 	if d == nil {
 		return
 	}
-
+	var audioErrLogged bool
 	d.SetAudioPayloadEncoder(func(p *wutil.RtpPacket) error {
 		buf := make([]byte, 0, len(p.Payload)+2)
 		buf = append(buf, p.Payload...)
-		buf = append(buf, 0x01, 0x00)
+		buf = append(buf, 0x01, 0x9f)
 		enc, err := cc.cipher.EncryptPacket(0, buf, 0)
 		if err != nil {
+			if !audioErrLogged {
+				cc.log.Warnf("[conf] audio encrypt: %v", err)
+				audioErrLogged = true
+			}
 			return err
 		}
 		p.Payload = enc
 		return nil
 	})
-	d.SetVideoPayloadEncoder(func(p *wutil.RtpPacket) error {
-		enc, err := cc.cipher.EncryptPacket(0, p.Payload, 0)
+}
+
+func (cc *ConferenceCall) waitForServerBlock(call telegram.InputGroupCall, wantHeight int32) error {
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if cc.chain.Height() >= wantHeight && len(cc.chain.ActiveEpochs()) > 0 {
+			return nil
+		}
+		updates, err := cc.client.PhoneGetGroupCallChainBlocks(call, 0, cc.chain.Height(), 10)
 		if err != nil {
 			return err
 		}
-		p.Payload = enc
+		for _, b := range extractChainBlocks(updates) {
+			block, derr := e2e.DecodeBlock(b)
+			if derr != nil {
+				continue
+			}
+			if block.Height <= cc.chain.Height() {
+				continue
+			}
+			_ = cc.chain.ApplyBlock(block)
+		}
+		if cc.chain.Height() >= wantHeight && len(cc.chain.ActiveEpochs()) > 0 {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for chain height %d (have %d)", wantHeight, cc.chain.Height())
+}
+
+func (cc *ConferenceCall) buildJoinBlock(call telegram.InputGroupCall) (*e2e.Block, []byte, error) {
+	if err := cc.fetchLatestMainChain(call); err != nil {
+		return nil, nil, fmt.Errorf("fetch latest chain: %w", err)
+	}
+	state := cc.chain.Snapshot()
+	if len(state.Participants) == 0 {
+		return nil, nil, errors.New("confcall: fetched empty chain state")
+	}
+	block, err := e2e.BuildSelfAddBlock(cc.signer, state, cc.selfUID)
+	if err != nil {
+		return nil, nil, err
+	}
+	encoded, err := e2e.EncodeBlock(block)
+	if err != nil {
+		return nil, nil, err
+	}
+	return block, encoded, nil
+}
+
+func (cc *ConferenceCall) fetchLatestMainChain(call telegram.InputGroupCall) error {
+	updates, err := cc.client.PhoneGetGroupCallChainBlocks(call, 0, -1, 32)
+	if err != nil {
+		return err
+	}
+	raw := extractChainBlocks(updates)
+	if len(raw) == 0 {
+		return errors.New("confcall: server returned no chain blocks")
+	}
+	parsed := make([]*e2e.Block, 0, len(raw))
+	for _, b := range raw {
+		if block, derr := e2e.DecodeBlock(b); derr == nil {
+			parsed = append(parsed, block)
+		}
+	}
+	if len(parsed) == 0 {
+		return errors.New("confcall: failed to decode any chain blocks")
+	}
+	sort.Slice(parsed, func(i, j int) bool { return parsed[i].Height > parsed[j].Height })
+	hasGroupState := func(b *e2e.Block) bool {
+		for _, ch := range b.Changes {
+			if _, ok := ch.(*e2e.ChangeSetGroupState); ok {
+				return true
+			}
+		}
+		return false
+	}
+	var chosen *e2e.Block
+	for _, b := range parsed {
+		if hasGroupState(b) {
+			chosen = b
+			break
+		}
+	}
+	if chosen == nil {
+		chosen = parsed[0]
+		cc.log.Warnf("[conf] no recent block carries GroupState; bootstrapping from h=%d", chosen.Height)
+	}
+	return cc.chain.BootstrapFromBlock(chosen)
+}
+
+func extractChainBlocks(updates telegram.Updates) [][]byte {
+	obj, ok := updates.(*telegram.UpdatesObj)
+	if !ok {
 		return nil
-	})
+	}
+	var out [][]byte
+	for _, u := range obj.Updates {
+		if cb, ok := u.(*telegram.UpdateGroupCallChainBlocks); ok {
+			out = append(out, cb.Blocks...)
+		}
+	}
+	return out
 }
 
 func extractConnectionParams(updates telegram.Updates) (string, error) {
@@ -426,10 +711,29 @@ func extractConferenceFromUpdates(updates telegram.Updates) (string, *telegram.I
 		if !ok {
 			continue
 		}
-		input := &telegram.InputGroupCallObj{ID: call.ID, AccessHash: call.AccessHash}
-		return call.InviteLink, input, nil
+		return call.InviteLink, &telegram.InputGroupCallObj{ID: call.ID, AccessHash: call.AccessHash}, nil
 	}
 	return "", nil, errors.New("confcall: no UpdateGroupCall in updates")
+}
+
+func extractInputGroupCallFromUpdates(updates telegram.Updates) (*telegram.InputGroupCallObj, error) {
+	_, call, err := extractConferenceFromUpdates(updates)
+	return call, err
+}
+
+func (cc *ConferenceCall) unmuteSelf() error {
+	cc.mu.Lock()
+	call := cc.call
+	cc.mu.Unlock()
+	if call == nil {
+		return errors.New("confcall: not in a call")
+	}
+	_, err := cc.client.PhoneEditGroupCallParticipant(&telegram.PhoneEditGroupCallParticipantParams{
+		Call:        call,
+		Participant: &telegram.InputPeerSelf{},
+		Muted:       false,
+	})
+	return err
 }
 
 func randomID() int32 {
@@ -438,15 +742,12 @@ func randomID() int32 {
 	return int32(binary.LittleEndian.Uint32(buf[:]) & 0x7fffffff)
 }
 
-// setInt256 writes a big-endian byte value into a gogram **tl.Int256
-// field. tl.Int256 is an internal struct{*big.Int} that gogram does not
-// re-export, so we allocate it via reflection on the field's element type.
 func setInt256(dst any, value []byte) {
-	v := reflect.ValueOf(dst).Elem() // *tl.Int256
+	v := reflect.ValueOf(dst).Elem()
 	if v.Kind() != reflect.Pointer {
 		return
 	}
-	elemType := v.Type().Elem() // tl.Int256
+	elemType := v.Type().Elem()
 	if elemType.Kind() != reflect.Struct || elemType.NumField() != 1 {
 		return
 	}
@@ -454,7 +755,7 @@ func setInt256(dst any, value []byte) {
 	if inner.Kind() != reflect.Pointer || inner.Elem() != reflect.TypeOf(big.Int{}) {
 		return
 	}
-	newVal := reflect.New(elemType)         // *tl.Int256
+	newVal := reflect.New(elemType)
 	newVal.Elem().Field(0).Set(reflect.ValueOf(new(big.Int).SetBytes(value)))
 	v.Set(newVal)
 }
