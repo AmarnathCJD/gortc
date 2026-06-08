@@ -128,6 +128,7 @@ func BuildSettingEngine() webrtc.SettingEngine {
 	se.SetHandleUndeclaredSSRCWithoutAnswer(true)
 	se.SetNetworkTypes([]webrtc.NetworkType{
 		webrtc.NetworkTypeUDP4,
+		webrtc.NetworkTypeUDP6,
 	})
 	se.SetInterfaceFilter(func(name string) bool {
 		lower := strings.ToLower(name)

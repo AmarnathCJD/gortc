@@ -239,8 +239,7 @@ func (gc *GroupConnection) Open() error {
 			if gc.onConnected != nil {
 				gc.onConnected()
 			}
-		case webrtc.PeerConnectionStateDisconnected,
-			webrtc.PeerConnectionStateFailed,
+		case webrtc.PeerConnectionStateFailed,
 			webrtc.PeerConnectionStateClosed:
 			if gc.onDisconnected != nil {
 				gc.onDisconnected()
@@ -313,32 +312,123 @@ func (gc *GroupConnection) pollICEStats(pc *webrtc.PeerConnection, stop <-chan s
 			return
 		case <-ticker.C:
 		}
-		pairs, failed, anyResp := 0, 0, false
-		var reqSent, respRecv uint64
-		for _, s := range pc.GetStats() {
-			cp, ok := s.(webrtc.ICECandidatePairStats)
-			if !ok {
-				continue
-			}
-			pairs++
-			reqSent += cp.RequestsSent
-			respRecv += cp.ResponsesReceived
-			if cp.ResponsesReceived > 0 {
-				anyResp = true
-			}
-			if cp.State == webrtc.StatsICECandidatePairStateFailed {
-				failed++
-			}
-		}
-		if pairs == 0 {
+		summary := iceStatsSnapshot(pc)
+		if summary.pairs == 0 {
 			gc.log.Debugf("[ice] no candidate pairs yet (remote candidates may be unreachable)")
 			continue
 		}
-		gc.log.Debugf("[ice] pairs=%d failed=%d req_sent=%d resp_recv=%d", pairs, failed, reqSent, respRecv)
-		if failed == pairs && !anyResp {
-			gc.log.Warnf("[ice] all %d candidate pairs failed, no STUN responses from Telegram (edge server unreachable from this NAT)", pairs)
+		gc.log.Debugf("[ice] %s", summary.String())
+		if summary.failed == summary.pairs && !summary.anyResponse {
+			gc.log.Warnf("[ice] all %d candidate pairs failed, no STUN responses from Telegram (edge server unreachable from this NAT); %s",
+				summary.pairs, summary.PairString())
 		}
 	}
+}
+
+type iceStatsSummary struct {
+	pairs       int
+	failed      int
+	anyResponse bool
+	requests    uint64
+	responses   uint64
+	detail      string
+}
+
+func (s iceStatsSummary) String() string {
+	return fmt.Sprintf("pairs=%d failed=%d req_sent=%d resp_recv=%d %s",
+		s.pairs, s.failed, s.requests, s.responses, s.PairString())
+}
+
+func (s iceStatsSummary) PairString() string {
+	if s.detail == "" {
+		return "selected_pair=none"
+	}
+	return s.detail
+}
+
+func iceStatsSnapshot(pc *webrtc.PeerConnection) iceStatsSummary {
+	stats := pc.GetStats()
+	candidates := make(map[string]webrtc.ICECandidateStats)
+	var chosen *webrtc.ICECandidatePairStats
+	var fallback *webrtc.ICECandidatePairStats
+	out := iceStatsSummary{}
+
+	for _, stat := range stats {
+		c, ok := stat.(webrtc.ICECandidateStats)
+		if ok {
+			candidates[c.ID] = c
+		}
+	}
+
+	for _, stat := range stats {
+		pair, ok := stat.(webrtc.ICECandidatePairStats)
+		if !ok {
+			continue
+		}
+		out.pairs++
+		out.requests += pair.RequestsSent
+		out.responses += pair.ResponsesReceived
+		if pair.ResponsesReceived > 0 {
+			out.anyResponse = true
+		}
+		if pair.State == webrtc.StatsICECandidatePairStateFailed {
+			out.failed++
+		}
+		if pair.Nominated {
+			p := pair
+			chosen = &p
+		}
+		if fallback == nil || candidatePairRank(pair) > candidatePairRank(*fallback) {
+			p := pair
+			fallback = &p
+		}
+	}
+
+	if chosen == nil {
+		chosen = fallback
+	}
+	if chosen != nil {
+		local := candidates[chosen.LocalCandidateID]
+		remote := candidates[chosen.RemoteCandidateID]
+		label := "selected_pair"
+		if !chosen.Nominated {
+			label = "best_pair"
+		}
+		out.detail = fmt.Sprintf("%s state=%s nominated=%t local=%s remote=%s req_sent=%d resp_recv=%d pkts=%d/%d rtt=%.3f",
+			label, chosen.State, chosen.Nominated, candidateStatsString(local), candidateStatsString(remote),
+			chosen.RequestsSent, chosen.ResponsesReceived, chosen.PacketsSent, chosen.PacketsReceived, chosen.CurrentRoundTripTime)
+	}
+	return out
+}
+
+func candidatePairRank(pair webrtc.ICECandidatePairStats) int {
+	switch pair.State {
+	case webrtc.StatsICECandidatePairStateSucceeded:
+		return 4
+	case webrtc.StatsICECandidatePairStateInProgress:
+		return 3
+	case webrtc.StatsICECandidatePairStateWaiting:
+		return 2
+	case webrtc.StatsICECandidatePairStateFailed:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func candidateStatsString(c webrtc.ICECandidateStats) string {
+	if c.ID == "" {
+		return "unknown"
+	}
+	family := "unknown"
+	if ip := net.ParseIP(c.IP); ip != nil {
+		if ip.To4() != nil {
+			family = "ip4"
+		} else {
+			family = "ip6"
+		}
+	}
+	return fmt.Sprintf("%s/%s/%s/%s/%s:%d", c.CandidateType, c.Protocol, family, c.NetworkType, c.IP, c.Port)
 }
 
 func (gc *GroupConnection) GetJoinPayload() (string, error) {
@@ -442,17 +532,17 @@ func (gc *GroupConnection) Connect(responseJSON string) error {
 	usable := 0
 	for _, c := range cands {
 		ip := net.ParseIP(c.IP)
-		ok := ip != nil && ip.To4() != nil
+		ok := ip != nil
 		if ok {
 			usable++
 		}
-		gc.log.Debugf("[ice-debug] remote candidate: typ=%s proto=%s %s:%s prio=%s usable_ipv4=%t",
+		gc.log.Debugf("[ice-debug] remote candidate: typ=%s proto=%s %s:%s prio=%s usable_ip=%t",
 			c.Type, c.Protocol, c.IP, c.Port, c.Priority, ok)
 	}
-	gc.log.Debugf("[ice-debug] remote candidates: %d total, %d usable IPv4; ufrag=%q pwd_len=%d fingerprints=%d",
+	gc.log.Debugf("[ice-debug] remote candidates: %d total, %d usable IP; ufrag=%q pwd_len=%d fingerprints=%d",
 		len(cands), usable, resp.Transport.Ufrag, len(resp.Transport.Pwd), len(resp.Transport.Fingerprints))
 	if usable == 0 {
-		gc.log.Warnf("Telegram returned no usable IPv4 candidate (%d total); cannot connect", len(cands))
+		gc.log.Warnf("Telegram returned no usable IP candidate (%d total); cannot connect", len(cands))
 	}
 
 	answer := buildAnswerSDP(resp)
@@ -574,6 +664,12 @@ func (gc *GroupConnection) OnICEFailed(handler func()) {
 
 func (gc *GroupConnection) fireICEFailed() {
 	gc.iceFailedOnce.Do(func() {
+		gc.mu.Lock()
+		pc := gc.pc
+		gc.mu.Unlock()
+		if pc != nil {
+			gc.log.Warnf("[ice] failed diagnostics: %s", iceStatsSnapshot(pc).String())
+		}
 		if gc.onICEFailed != nil {
 			go gc.onICEFailed()
 		}
@@ -748,7 +844,7 @@ func buildAnswerSDP(resp ServerResponse) string {
 
 	lines = append(lines,
 		fmt.Sprintf("m=audio %d RTP/SAVPF %s", findRemotePort(t.Candidates), strings.Join(payloadNums, " ")),
-		fmt.Sprintf("c=IN IP4 %s", findRemoteIP(t.Candidates)),
+		remoteConnectionLine(t.Candidates),
 		"a=mid:0",
 		fmt.Sprintf("a=ice-ufrag:%s", t.Ufrag),
 		fmt.Sprintf("a=ice-pwd:%s", t.Pwd),
@@ -763,7 +859,7 @@ func buildAnswerSDP(resp ServerResponse) string {
 
 	for _, c := range t.Candidates {
 		ip := net.ParseIP(c.IP)
-		if ip == nil || ip.To4() == nil {
+		if ip == nil {
 			continue
 		}
 		lines = append(lines,
@@ -820,7 +916,7 @@ func buildAnswerSDP(resp ServerResponse) string {
 
 		lines = append(lines,
 			fmt.Sprintf("m=video %d RTP/SAVPF %s", findRemotePort(t.Candidates), strings.Join(videoPayloadNums, " ")),
-			fmt.Sprintf("c=IN IP4 %s", findRemoteIP(t.Candidates)),
+			remoteConnectionLine(t.Candidates),
 			"a=mid:1",
 			fmt.Sprintf("a=ice-ufrag:%s", t.Ufrag),
 			fmt.Sprintf("a=ice-pwd:%s", t.Pwd),
@@ -898,17 +994,25 @@ func buildAnswerSDP(resp ServerResponse) string {
 func findRemoteIP(candidates []Candidate) string {
 	for _, c := range candidates {
 		ip := net.ParseIP(c.IP)
-		if ip != nil && ip.To4() != nil {
+		if ip != nil {
 			return c.IP
 		}
 	}
 	return "0.0.0.0"
 }
 
+func remoteConnectionLine(candidates []Candidate) string {
+	ip := net.ParseIP(findRemoteIP(candidates))
+	if ip != nil && ip.To4() == nil {
+		return fmt.Sprintf("c=IN IP6 %s", ip.String())
+	}
+	return fmt.Sprintf("c=IN IP4 %s", findRemoteIP(candidates))
+}
+
 func findRemotePort(candidates []Candidate) int {
 	for _, c := range candidates {
 		ip := net.ParseIP(c.IP)
-		if ip != nil && ip.To4() != nil {
+		if ip != nil {
 			p, _ := strconv.Atoi(c.Port)
 			return p
 		}

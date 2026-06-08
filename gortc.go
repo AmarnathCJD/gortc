@@ -63,6 +63,8 @@ type (
 )
 
 const (
+	Version = "v0.1.0"
+
 	TrackAudio     = media.TrackAudio
 	TrackVideo     = media.TrackVideo
 	TrackKindAudio = media.TrackKindAudio
@@ -135,14 +137,14 @@ type Call struct {
 	gc *groupcall.GroupCall
 }
 
-func (c *Call) OnConnected(fn func())                          { c.gc.OnConnected = fn }
-func (c *Call) OnDisconnected(fn func())                       { c.gc.OnDisconnected = fn }
-func (c *Call) OnStateChange(fn func(state string))            { c.gc.OnStateChange = fn }
-func (c *Call) OnStreamEnded(fn func(error))                   { c.gc.OnStreamEnded = fn }
-func (c *Call) OnTrack(fn func(*IncomingTrack))                { c.gc.OnTrack = fn }
-func (c *Call) OnReconnecting(fn func(attempt int))            { c.gc.OnReconnecting = fn }
-func (c *Call) OnReconnected(fn func())                        { c.gc.OnReconnected = fn }
-func (c *Call) OnReconnectFailed(fn func(error))               { c.gc.OnReconnectFailed = fn }
+func (c *Call) OnConnected(fn func())               { c.gc.OnConnected = fn }
+func (c *Call) OnDisconnected(fn func())            { c.gc.OnDisconnected = fn }
+func (c *Call) OnStateChange(fn func(state string)) { c.gc.OnStateChange = fn }
+func (c *Call) OnStreamEnded(fn func(error))        { c.gc.OnStreamEnded = fn }
+func (c *Call) OnTrack(fn func(*IncomingTrack))     { c.gc.OnTrack = fn }
+func (c *Call) OnReconnecting(fn func(attempt int)) { c.gc.OnReconnecting = fn }
+func (c *Call) OnReconnected(fn func())             { c.gc.OnReconnected = fn }
+func (c *Call) OnReconnectFailed(fn func(error))    { c.gc.OnReconnectFailed = fn }
 func (c *Call) OnParticipant(fn func(ParticipantEvent, Participant)) {
 	c.gc.OnParticipant = fn
 }

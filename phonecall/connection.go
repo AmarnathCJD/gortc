@@ -136,7 +136,6 @@ func (c *connection) open(conns []telegram.PhoneConnection) error {
 		c.mu.Unlock()
 		c.updateAggregateState()
 		if state == webrtc.ICETransportStateFailed ||
-			state == webrtc.ICETransportStateDisconnected ||
 			state == webrtc.ICETransportStateClosed {
 			c.fireDisconnected()
 		}
