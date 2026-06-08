@@ -33,31 +33,23 @@ func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (str
 	if err := cc.ensureSigner(); err != nil {
 		return "", err
 	}
-	me, err := cc.client.GetMe()
+	me, err := cc.initSession()
 	if err != nil {
-		return "", fmt.Errorf("get me: %w", err)
+		return "", err
 	}
-	cc.selfUID = me.ID
-	chain := e2e.NewChain(cc.signer)
-	chain.SetSelfUserID(cc.selfUID)
 	zero, err := e2e.BuildZeroBlock(cc.signer, me.ID)
 	if err != nil {
 		return "", fmt.Errorf("build zero block: %w", err)
 	}
-	if err := chain.ApplyBlock(zero); err != nil {
+	if err := cc.chain.ApplyBlock(zero); err != nil {
 		return "", fmt.Errorf("apply zero block: %w", err)
 	}
-	cc.chain = chain
-	cc.cipher = e2e.NewPacketCipher(chain, cc.signer)
-	cc.verify = e2e.NewVerificationChain(cc.signer, me.ID)
-
 	encoded, err := e2e.EncodeBlock(zero)
 	if err != nil {
 		return "", fmt.Errorf("encode zero block: %w", err)
 	}
 
 	params := &telegram.PhoneCreateConferenceCallParams{
-		Muted:        false,
 		VideoStopped: true,
 		Join:         joinImmediately,
 		RandomID:     randomID(),
@@ -65,17 +57,9 @@ func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (str
 	if joinImmediately {
 		params.Block = encoded
 		setInt256(&params.PublicKey, cc.pubKey)
-		conn := transport.NewGroupConnection(cc.log.With("subsystem", "transport"))
-		cc.conn = conn
-		if err := conn.Open(); err != nil {
-			return "", fmt.Errorf("open conn: %w", err)
-		}
-		if err := cc.prepareLocalMedia(); err != nil {
-			return "", err
-		}
-		joinPayload, err := conn.GetJoinPayload()
+		joinPayload, err := cc.openTransport()
 		if err != nil {
-			return "", fmt.Errorf("get join payload: %w", err)
+			return "", err
 		}
 		params.Params = &telegram.DataJson{Data: joinPayload}
 	}
@@ -84,7 +68,6 @@ func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (str
 	if err != nil {
 		return "", fmt.Errorf("phone.createConferenceCall: %w", err)
 	}
-
 	slug, callObj, err := extractConferenceFromUpdates(updates)
 	if err != nil {
 		return "", err
@@ -107,36 +90,35 @@ func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (str
 
 // Join joins an existing conference call by its public slug.
 func (cc *ConferenceCall) Join(ctx context.Context, slug string) error {
+	cc.slug = slug
+	if err := cc.joinExisting(&telegram.InputGroupCallSlug{Slug: slug}, "slug"); err != nil {
+		return err
+	}
+	cc.fetchParticipantSources()
+	return nil
+}
+
+// JoinFromInvite joins via an incoming MessageActionConferenceCall message.
+func (cc *ConferenceCall) JoinFromInvite(ctx context.Context, msgID int32) error {
+	return cc.joinExisting(&telegram.InputGroupCallInviteMessage{MsgID: msgID}, "invite")
+}
+
+// joinExisting is the shared shape of Join and JoinFromInvite: set up the
+// session, fetch the latest chain state, submit a self-add block, wait for the
+// server echo, attach media, and kick verification.
+func (cc *ConferenceCall) joinExisting(callInput telegram.InputGroupCall, label string) error {
 	cc.installHandlers()
 	if err := cc.ensureSigner(); err != nil {
 		return err
 	}
-	cc.slug = slug
-
-	me, err := cc.client.GetMe()
+	me, err := cc.initSession()
 	if err != nil {
-		return fmt.Errorf("get me: %w", err)
-	}
-	cc.selfUID = me.ID
-	chain := e2e.NewChain(cc.signer)
-	chain.SetSelfUserID(cc.selfUID)
-	cc.chain = chain
-	cc.cipher = e2e.NewPacketCipher(chain, cc.signer)
-	cc.verify = e2e.NewVerificationChain(cc.signer, me.ID)
-
-	conn := transport.NewGroupConnection(cc.log.With("subsystem", "transport"))
-	cc.conn = conn
-	if err := conn.Open(); err != nil {
-		return fmt.Errorf("open conn: %w", err)
-	}
-	if err := cc.prepareLocalMedia(); err != nil {
 		return err
 	}
-	joinPayload, err := conn.GetJoinPayload()
+	joinPayload, err := cc.openTransport()
 	if err != nil {
-		return fmt.Errorf("get join payload: %w", err)
+		return err
 	}
-	callInput := &telegram.InputGroupCallSlug{Slug: slug}
 	_, encodedBlock, err := cc.buildJoinBlock(callInput)
 	if err != nil {
 		return fmt.Errorf("build join block: %w", err)
@@ -151,7 +133,7 @@ func (cc *ConferenceCall) Join(ctx context.Context, slug string) error {
 	setInt256(&params.PublicKey, cc.pubKey)
 	updates, err := cc.client.PhoneJoinGroupCall(params)
 	if err != nil {
-		return fmt.Errorf("phone.joinGroupCall: %w", err)
+		return fmt.Errorf("phone.joinGroupCall (%s): %w", label, err)
 	}
 	call, err := extractInputGroupCallFromUpdates(updates)
 	if err != nil {
@@ -160,7 +142,7 @@ func (cc *ConferenceCall) Join(ctx context.Context, slug string) error {
 	cc.call = call
 	cc.applyUpdates(updates)
 	if err := cc.waitForServerBlock(callInput, beforeHeight+1); err != nil {
-		cc.log.Warnf("[conf] wait for server join block: %v", err)
+		cc.log.Warnf("[conf] wait for server join block (%s): %v", label, err)
 	}
 	if err := cc.unmuteSelf(); err != nil {
 		cc.log.Warnf("[conf] unmute self: %v", err)
@@ -169,19 +151,15 @@ func (cc *ConferenceCall) Join(ctx context.Context, slug string) error {
 		return fmt.Errorf("attach media: %w", err)
 	}
 	cc.kickVerification()
-	cc.fetchParticipantSources()
 	return nil
 }
 
-// JoinFromInvite joins via an incoming MessageActionConferenceCall message.
-func (cc *ConferenceCall) JoinFromInvite(ctx context.Context, msgID int32) error {
-	cc.installHandlers()
-	if err := cc.ensureSigner(); err != nil {
-		return err
-	}
+// initSession resolves self user, then sets up chain/cipher/verify. Returns
+// the resolved user record.
+func (cc *ConferenceCall) initSession() (*telegram.UserObj, error) {
 	me, err := cc.client.GetMe()
 	if err != nil {
-		return fmt.Errorf("get me: %w", err)
+		return nil, fmt.Errorf("get me: %w", err)
 	}
 	cc.selfUID = me.ID
 	chain := e2e.NewChain(cc.signer)
@@ -189,53 +167,25 @@ func (cc *ConferenceCall) JoinFromInvite(ctx context.Context, msgID int32) error
 	cc.chain = chain
 	cc.cipher = e2e.NewPacketCipher(chain, cc.signer)
 	cc.verify = e2e.NewVerificationChain(cc.signer, me.ID)
+	return me, nil
+}
 
+// openTransport opens the GroupConnection, prepares local media tracks, and
+// returns the WebRTC join payload (offer SDP wrapped in tdesktop's JSON shape).
+func (cc *ConferenceCall) openTransport() (string, error) {
 	conn := transport.NewGroupConnection(cc.log.With("subsystem", "transport"))
 	cc.conn = conn
 	if err := conn.Open(); err != nil {
-		return fmt.Errorf("open conn: %w", err)
+		return "", fmt.Errorf("open conn: %w", err)
 	}
 	if err := cc.prepareLocalMedia(); err != nil {
-		return err
+		return "", err
 	}
-	joinPayload, err := conn.GetJoinPayload()
+	payload, err := conn.GetJoinPayload()
 	if err != nil {
-		return fmt.Errorf("get join payload: %w", err)
+		return "", fmt.Errorf("get join payload: %w", err)
 	}
-	callInput := &telegram.InputGroupCallInviteMessage{MsgID: msgID}
-	_, encodedBlock, err := cc.buildJoinBlock(callInput)
-	if err != nil {
-		return fmt.Errorf("build join block: %w", err)
-	}
-	beforeHeight := cc.chain.Height()
-	params := &telegram.PhoneJoinGroupCallParams{
-		Call:   callInput,
-		JoinAs: &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
-		Block:  encodedBlock,
-		Params: &telegram.DataJson{Data: joinPayload},
-	}
-	setInt256(&params.PublicKey, cc.pubKey)
-	updates, err := cc.client.PhoneJoinGroupCall(params)
-	if err != nil {
-		return fmt.Errorf("phone.joinGroupCall (invite): %w", err)
-	}
-	call, err := extractInputGroupCallFromUpdates(updates)
-	if err != nil {
-		return err
-	}
-	cc.call = call
-	cc.applyUpdates(updates)
-	if err := cc.waitForServerBlock(callInput, beforeHeight+1); err != nil {
-		cc.log.Warnf("[conf] wait for server join block (invite): %v", err)
-	}
-	if err := cc.unmuteSelf(); err != nil {
-		cc.log.Warnf("[conf] unmute self: %v", err)
-	}
-	if err := cc.attachMediaFromUpdates(updates); err != nil {
-		return err
-	}
-	cc.kickVerification()
-	return nil
+	return payload, nil
 }
 
 // kickVerification starts a commit-reveal round.

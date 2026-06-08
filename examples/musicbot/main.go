@@ -58,7 +58,7 @@ func main() {
 		client:    botClient,
 		assistant: assistant,
 		mgr:       newManager(),
-		logLevel:  gortc.WithLogger(gortc.NewLogger(slog.LevelDebug)),
+		logLevel:  gortc.WithLogger(gortc.NewLogger(slog.LevelInfo)),
 		downDir:   downDir,
 	}
 	b.register()

@@ -3,6 +3,8 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
+// Package phonecall implements Telegram 1:1 phone calls (the tgcalls v2
+// protocol) — direct ICE/DTLS between peers, no SFU.
 package phonecall
 
 import (
@@ -81,6 +83,8 @@ func WithLogLevel(level slog.Level) Option {
 	}
 }
 
+// PhoneCall is a 1:1 Telegram phone call session (tgcalls v2). Build one with
+// New, then drive it via Outgoing / Accept / Decline.
 type PhoneCall struct {
 	client *telegram.Client
 	log    *transport.Logger

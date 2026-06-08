@@ -620,10 +620,11 @@ func (gc *GroupConnection) StartAudioRTCP() {
 				pc.ConnectionState() == webrtc.PeerConnectionStateFailed {
 				return false
 			}
+			// Always emit an SR — even when no audio has been sent yet — so the
+			// Telegram SFU's egress mapping for our SSRC is set up immediately on
+			// connect. Without this, audio that starts streaming 10s+ after connect
+			// (e.g. after waiting for E2E peer verification) is dropped silently.
 			lastTS, pkts, octets := d.AudioStats()
-			if pkts == 0 {
-				return true
-			}
 			sr := &wutil.RtcpSenderReport{
 				SSRC:        ssrc,
 				NTPTime:     wutil.NowNTP(),

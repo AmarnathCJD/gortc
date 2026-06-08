@@ -36,7 +36,7 @@ const (
 	minPaddingForData  = 16
 )
 
-// msg_id(16) || AES-CBC(random-prefix-padded data).
+// EncryptDataTDE2E produces msg_id(16) || AES-CBC(random-prefix-padded data).
 func EncryptDataTDE2E(secret, data []byte) ([]byte, error) {
 	out, _, err := encryptDataWithExtra(secret, data, nil)
 	return out, err
@@ -229,7 +229,7 @@ func splitAesCBCFromHash(h []byte) (key, iv []byte) {
 	return h[:32], h[32:48]
 }
 
-// HMAC-SHA512("tde2e_shared_secret", X25519(priv, peerPub))[:32].
+// ComputeSharedSecretTDE2E returns HMAC-SHA512("tde2e_shared_secret", X25519(priv, peerPub))[:32].
 func ComputeSharedSecretTDE2E(priv ed25519.PrivateKey, peerPub ed25519.PublicKey) ([]byte, error) {
 	xPriv, err := ed25519PrivToCurveScalar(priv)
 	if err != nil {
@@ -326,7 +326,7 @@ func hmacSHA512(key, data []byte) []byte {
 	return h.Sum(nil)
 }
 
-// DeriveGroupSharedKey: HMAC-SHA512(raw, block_hash)[0:32].
+// DeriveGroupSharedKey returns HMAC-SHA512(raw, blockHash)[0:32].
 func DeriveGroupSharedKey(raw [32]byte, blockHash [32]byte) [32]byte {
 	mac := hmacSHA512(raw[:], blockHash[:])
 	var out [32]byte

@@ -3,6 +3,8 @@
 //  https://github.com/amarnathcjd/gortc
 // ────────────────────────────────────────────────────────────────────
 
+// Package groupcall implements joining and streaming media into Telegram
+// group voice/video chats (regular non-E2E group calls).
 package groupcall
 
 import (
@@ -21,6 +23,8 @@ import (
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 )
 
+// GroupCall is a single Telegram group voice/video chat session. Build one
+// with New, then drive it via JoinCall / Stream / Play / Leave.
 type GroupCall struct {
 	client     *telegram.Client
 	conn       *transport.GroupConnection

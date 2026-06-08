@@ -30,7 +30,7 @@ const (
 	crcGroupBroadcastNonceReveal uint32 = 0x83f4f9d8
 )
 
-// Block: e2e.chain.block#639a3db6
+// Block is e2e.chain.block#639a3db6
 //
 //	signature:int512 flags:# prev_block_hash:int256
 //	changes:vector<e2e.chain.Change> height:int
@@ -45,7 +45,7 @@ type Block struct {
 	SignaturePublicKey *[32]byte // present only on zero-block (flags.0)
 }
 
-// StateProof: e2e.chain.stateProof
+// StateProof is e2e.chain.stateProof
 //
 //	flags:# kv_hash:int256
 //	group_state:flags.0?e2e.chain.GroupState
@@ -56,7 +56,7 @@ type StateProof struct {
 	SharedKey  *SharedKeyTL
 }
 
-// GroupState: e2e.chain.groupState
+// GroupState is e2e.chain.groupState
 //
 //	participants:vector<e2e.chain.GroupParticipant>
 //	external_permissions:int
@@ -65,7 +65,7 @@ type GroupState struct {
 	ExternalPermissions int32
 }
 
-// GroupParticipant: e2e.chain.groupParticipant
+// GroupParticipant is e2e.chain.groupParticipant
 //
 //	user_id:long public_key:int256 flags:#
 //	add_users:flags.0?true remove_users:flags.1?true
@@ -78,7 +78,7 @@ type GroupParticipant struct {
 	Version     int32
 }
 
-// SharedKeyTL: e2e.chain.sharedKey
+// SharedKeyTL is e2e.chain.sharedKey
 //
 //	ek:int256 encrypted_shared_key:string
 //	dest_user_id:vector<long> dest_header:vector<bytes>

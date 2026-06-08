@@ -1,27 +1,12 @@
 # gortc
 
-A Go library for streaming audio and video into Telegram group calls, built on top of [gogram](https://github.com/amarnathcjd/gogram).
+A Go library for streaming audio and video into Telegram calls — group voice/video chats, 1:1 phone calls, and **E2E-encrypted conference calls** — built on top of [gogram](https://github.com/amarnathcjd/gogram).
 
-It joins voice/video chats and streams from flexible sources: files, URLs, readers, raw PCM/video frames, or pre-encoded Opus/IVF.
+## Why gortc
 
-Existing solutions (pytgcalls, ntgcalls, tgcalls, etc.) all wrap libwebrtc or other C++ stacks via bindings. **gortc is the first pure-Go implementation** — no libwebrtc, no CGo, no native dependencies. The SRTP, DTLS, ICE, and SFU signaling stack is all native Go.
-
-## E2E conference calls — a first
-
-gortc also ships **the first third-party implementation of Telegram's E2E-encrypted conference calls** (the "spontaneous group call without a chat" feature introduced in April 2025). pytgcalls, ntgcalls, tgcalls, and every other call library can do regular group calls — none of them support E2E conference calls. Only the official Telegram desktop/mobile clients do.
-
-That stack — the per-call signed append-only blockchain, the per-participant shared-key derivation, the per-packet TDE2E cipher, and the emoji-fingerprint commit-reveal verification — is all implemented in [`confcall/`](confcall) and [`confcall/e2e/`](confcall/e2e), matching tdlib byte-for-byte.
-
-```go
-cc := confcall.New(client, confcall.WithLogLevel(slog.LevelInfo))
-cc.OnEmojiReady = func(em []string) { log.Printf("verify: %v", em) }
-
-slug, _ := cc.Create(ctx, true)        // share slug with peers
-// or: cc.Join(ctx, "<slug>")
-cc.Stream(ctx, gortc.FromFile("audio.ogg"))
-```
-
-See [`examples/confcall`](examples/confcall) for a runnable demo.
+- **First-ever third-party E2E conference call implementation.** Telegram's E2E-encrypted "spontaneous group call without a chat" (shipped April 2025) is supported only by the official Telegram desktop/mobile clients — until now. gortc ships the full stack: signed append-only chain, per-participant shared-key derivation, per-packet TDE2E cipher, emoji-fingerprint commit-reveal verification. All in [`confcall/`](confcall) and [`confcall/e2e/`](confcall/e2e), matching tdlib byte-for-byte.
+- **First pure-Go implementation of Telegram calls.** Existing libraries (pytgcalls, ntgcalls, tgcalls, …) all wrap libwebrtc or other C++ stacks via bindings. gortc has zero C dependencies — the SRTP, DTLS, ICE, RTP/RTCP, and SFU signaling stack under [`webrtc/`](webrtc) is all native Go (adapted from [pion](https://github.com/pion)). One static binary, no CGo, no libwebrtc.
+- **Three call types, one API.** Regular group calls ([`groupcall`](groupcall)), 1:1 phone calls ([`phonecall`](phonecall)), and E2E conference calls ([`confcall`](confcall)) all consume the same source pipeline: local files, URLs, readers, raw PCM/video frames, or pre-encoded Opus/IVF. One `Stream` API, three transports.
 
 ## Install
 
@@ -29,22 +14,63 @@ See [`examples/confcall`](examples/confcall) for a runnable demo.
 go get github.com/amarnathcjd/gortc
 ```
 
+You'll also need [`ffmpeg`](https://ffmpeg.org) on `$PATH` (only for transcoding sources — pre-encoded sources skip it).
+
 ## Quick start
 
-```go
-client, _ := telegram.NewClient(telegram.ClientConfig{ /* ... */ })
-client.Conn()
-
-call := gortc.NewCall(client, gortc.WithLogLevel(slog.LevelInfo))
-call.OnConnected(func() {
-    go call.Stream(context.Background(), gortc.FromFile("movie.mkv"))
-})
-
-if err := call.Join("@mychat"); err != nil {
-    log.Fatal(err)
-}
-defer call.Leave()
+```sh
+# Get API credentials at https://my.telegram.org/apps
+export API_ID=<your-app-id>
+export API_HASH=<your-app-hash>
 ```
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "log/slog"
+
+    "github.com/amarnathcjd/gogram/telegram"
+    "github.com/amarnathcjd/gortc"
+)
+
+func main() {
+    client, _ := telegram.NewClient(telegram.ClientConfig{
+        AppID:   int32(/* API_ID */),
+        AppHash: /* API_HASH */,
+        Session: "session.dat",
+    })
+    client.Conn()
+    client.AuthPrompt()
+
+    call := gortc.NewCall(client, gortc.WithLogLevel(slog.LevelInfo))
+    call.OnConnected(func() {
+        go call.Stream(context.Background(), gortc.FromFile("movie.mkv"))
+    })
+
+    if err := call.Join("@mychat"); err != nil {
+        log.Fatal(err)
+    }
+    defer call.Leave()
+
+    client.Idle() // block until Ctrl+C
+}
+```
+
+## E2E conference calls
+
+```go
+cc := confcall.New(client, confcall.WithLogLevel(slog.LevelInfo))
+cc.OnEmojiReady = func(em []string) { log.Printf("verify: %v", em) }
+
+slug, _ := cc.Create(ctx, true)        // share slug with peers
+// or: cc.Join(ctx, "<slug>")
+cc.Stream(ctx, media.FromOggOpus(file))
+```
+
+See [`examples/confcall`](examples/confcall) for a runnable end-to-end demo.
 
 ## Sources
 

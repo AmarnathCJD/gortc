@@ -34,6 +34,8 @@ func WithLogLevel(level slog.Level) Option {
 	}
 }
 
+// ConferenceCall is a single E2E-encrypted conference call session. Build one
+// with New, then drive it via Create / Join / JoinFromInvite.
 type ConferenceCall struct {
 	client *telegram.Client
 	log    *transport.Logger
