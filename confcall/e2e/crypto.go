@@ -16,18 +16,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 
 	"filippo.io/edwards25519"
 	"golang.org/x/crypto/curve25519"
 )
 
-// Magic CRCs from the e2e_api.tl schema:
-//
-//	e2e_callPacket::ID            = 1084669673  (0x40a76029)
-//	e2e_callPacketLargeMsgId::ID  =  484797485  (0x1cea882d)
-//
-// They appear as 4-byte little-endian prefixes in the call-packet
-// associated-data layout per tdlib's Call.cpp::encrypt.
+// TL constructor CRCs (little-endian wire prefix):
+//   e2e.callPacket            = 0x40a6bee9
+//   e2e.callPacketLargeMsgId  = 0x1ce56c2d
 var (
 	magicCallPacket           = []byte{0xe9, 0xbe, 0xa6, 0x40}
 	magicCallPacketLargeMsgID = []byte{0x2d, 0x6c, 0xe5, 0x1c}
@@ -39,28 +36,18 @@ const (
 	minPaddingForData  = 16
 )
 
-// EncryptDataTDE2E mirrors tde2e/td/e2e/MessageEncryption.cpp::encrypt_data.
-// Output layout: msg_id(16 bytes) || AES-CBC(data with random prefix).
-// The msg_id is HMAC-SHA256(hmac_secret, padded_data || extra || u32(extra)).
+// msg_id(16) || AES-CBC(random-prefix-padded data).
 func EncryptDataTDE2E(secret, data []byte) ([]byte, error) {
 	out, _, err := encryptDataWithExtra(secret, data, nil)
 	return out, err
 }
 
-// EncryptDataTDE2EWithLargeMsgID is the same as EncryptDataTDE2E but
-// also returns the 32-byte large_msg_id (the full HMAC-SHA256 result —
-// msg_id is its first 16 bytes). Used by the call-packet encryption
-// path which signs the large_msg_id separately.
-func EncryptDataTDE2EWithLargeMsgID(secret, data, extra []byte) (out []byte, largeMsgID [32]byte, err error) {
+func EncryptDataTDE2EWithLargeMsgID(secret, data, extra []byte) ([]byte, [32]byte, error) {
 	return encryptDataWithExtra(secret, data, extra)
 }
 
 func encryptDataWithExtra(secret, data, extra []byte) ([]byte, [32]byte, error) {
 	var largeMsgID [32]byte
-	// Prefix length is deterministic, NOT random — see TDLib's
-	// MessageEncryption::gen_random_prefix:
-	//   buff_size = ((MIN_PADDING + 15 + data_size) & ~15) - data_size
-	// Only the bytes are random; the length is fixed by data_size.
 	prefixLen := ((minPaddingForData + 15 + len(data)) & ^15) - len(data)
 	prefix := make([]byte, prefixLen)
 	if _, err := rand.Read(prefix); err != nil {
@@ -70,13 +57,10 @@ func encryptDataWithExtra(secret, data, extra []byte) ([]byte, [32]byte, error) 
 
 	padded := append(prefix, data...)
 
-	// Derive sub-keys.
 	large := hmacSHA512(secret, []byte(tde2eEncryptData))
 	encSecret := large[:32]
 	hmacSecret := large[32:64]
 
-	// large_msg_id = HMAC-SHA256(hmac_secret, padded || extra || u32_le(len(extra)))
-	// msg_id = large_msg_id[0:16]
 	tail := make([]byte, 0, len(padded)+len(extra)+4)
 	tail = append(tail, padded...)
 	tail = append(tail, extra...)
@@ -89,9 +73,7 @@ func encryptDataWithExtra(secret, data, extra []byte) ([]byte, [32]byte, error) 
 	copy(largeMsgID[:], macMsgID.Sum(nil))
 	msgID := largeMsgID[:16]
 
-	// Derive AES-CBC key+IV.
 	cbcKey, cbcIV := splitAesCBCFromHash(hmacSHA512(encSecret, msgID))
-
 	block, err := aes.NewCipher(cbcKey)
 	if err != nil {
 		return nil, largeMsgID, err
@@ -105,9 +87,8 @@ func encryptDataWithExtra(secret, data, extra []byte) ([]byte, [32]byte, error) 
 	return out, largeMsgID, nil
 }
 
-// EncryptHeaderTDE2E mirrors tde2e/td/e2e/MessageEncryption.cpp::encrypt_header.
-// Encrypts a 32-byte one-time-secret under AES-CBC keyed by the shared
-// secret and IVed by the encrypted message's msg_id prefix.
+// EncryptHeaderTDE2E AES-CBC-encrypts a 32-byte one-time-secret under a key
+// derived from the shared secret and the encrypted message's msg_id.
 func EncryptHeaderTDE2E(oneTimeSecret, encryptedMessage, secret []byte) ([]byte, error) {
 	if len(oneTimeSecret) != 32 {
 		return nil, fmt.Errorf("encrypt_header: one_time_secret must be 32 bytes, got %d", len(oneTimeSecret))
@@ -151,44 +132,60 @@ func DecryptHeaderTDE2E(encryptedHeader, encryptedMessage, secret []byte) ([]byt
 }
 
 func DecryptDataTDE2E(secret, encrypted []byte) ([]byte, error) {
+	plain, _, err := DecryptDataTDE2EWithExtra(secret, encrypted, nil)
+	return plain, err
+}
+
+func DecryptDataTDE2EWithExtra(secret, encrypted, extra []byte) ([]byte, [32]byte, error) {
+	var largeMsgID [32]byte
 	if len(encrypted) < 16 {
-		return nil, errors.New("decrypt_data: too short for msg_id")
+		return nil, largeMsgID, errors.New("decrypt_data: too short for msg_id")
 	}
 	msgID := encrypted[:16]
 	ct := encrypted[16:]
 	if len(ct) == 0 || len(ct)%16 != 0 {
-		return nil, fmt.Errorf("decrypt_data: ciphertext length %d not multiple of 16", len(ct))
+		return nil, largeMsgID, fmt.Errorf("decrypt_data: ciphertext length %d not multiple of 16", len(ct))
 	}
 
 	large := hmacSHA512(secret, []byte(tde2eEncryptData))
 	encSecret := large[:32]
+	hmacSecret := large[32:64]
 
 	cbcKey, cbcIV := splitAesCBCFromHash(hmacSHA512(encSecret, msgID))
 	block, err := aes.NewCipher(cbcKey)
 	if err != nil {
-		return nil, err
+		return nil, largeMsgID, err
 	}
 	padded := make([]byte, len(ct))
 	cipher.NewCBCDecrypter(block, cbcIV).CryptBlocks(padded, ct)
 
 	if len(padded) == 0 {
-		return nil, errors.New("decrypt_data: empty plaintext")
+		return nil, largeMsgID, errors.New("decrypt_data: empty plaintext")
 	}
 	prefixLen := int(padded[0])
 	if prefixLen < minPaddingForData || prefixLen > len(padded) {
-		return nil, fmt.Errorf("decrypt_data: bad prefix length %d", prefixLen)
+		return nil, largeMsgID, fmt.Errorf("decrypt_data: bad prefix length %d", prefixLen)
 	}
-	return padded[prefixLen:], nil
+	tail := make([]byte, 0, len(padded)+len(extra)+4)
+	tail = append(tail, padded...)
+	tail = append(tail, extra...)
+	var lenExtra [4]byte
+	binary.LittleEndian.PutUint32(lenExtra[:], uint32(len(extra)))
+	tail = append(tail, lenExtra[:]...)
+	macMsgID := hmac.New(sha256.New, hmacSecret)
+	macMsgID.Write(tail)
+	copy(largeMsgID[:], macMsgID.Sum(nil))
+	if !hmac.Equal(msgID, largeMsgID[:16]) {
+		return nil, largeMsgID, errors.New("decrypt_data: msg_id mismatch")
+	}
+	return padded[prefixLen:], largeMsgID, nil
 }
 
 func RecoverGroupSharedKey(myPriv ed25519.PrivateKey, ek [32]byte, destHeader, encGroupSharedKey []byte) ([32]byte, error) {
 	return recoverWithEKMode(myPriv, ek, destHeader, encGroupSharedKey, 0)
 }
 
-// recoverWithEKMode mode 0: treat ek as Ed25519 pubkey (edwards→montgomery).
-// mode 1: treat ek as raw Curve25519 pubkey.
-// Whichever mode, the X25519 raw output is fed through the same
-// "tde2e_shared_secret" HMAC-SHA512[:32] KDF that PrivateKey::compute_shared_secret uses.
+// raw Curve25519 pubkey (mode 1), then runs X25519 + TDE2E decryption as usual. This is used for the founder block, which has no previous epoch to copy the EK from.
 func recoverWithEKMode(myPriv ed25519.PrivateKey, ek [32]byte, destHeader, encGroupSharedKey []byte, ekMode int) ([32]byte, error) {
 	var out [32]byte
 	xPriv, err := ed25519PrivToCurveScalar(myPriv)
@@ -232,9 +229,7 @@ func splitAesCBCFromHash(h []byte) (key, iv []byte) {
 	return h[:32], h[32:48]
 }
 
-// ComputeSharedSecretTDE2E matches tde2e/Keys.cpp::PrivateKey::compute_shared_secret:
-//   x25519 = Ed25519::compute_shared_secret(peer_pub, priv)
-//   return HMAC-SHA512("tde2e_shared_secret", x25519)[:32]
+// HMAC-SHA512("tde2e_shared_secret", X25519(priv, peerPub))[:32].
 func ComputeSharedSecretTDE2E(priv ed25519.PrivateKey, peerPub ed25519.PublicKey) ([]byte, error) {
 	xPriv, err := ed25519PrivToCurveScalar(priv)
 	if err != nil {
@@ -252,10 +247,7 @@ func ComputeSharedSecretTDE2E(priv ed25519.PrivateKey, peerPub ed25519.PublicKey
 	return mac[:32], nil
 }
 
-// ed25519PubToCurve converts an Ed25519 public key (Edwards form) to
-// the corresponding Curve25519 (Montgomery) public key.
-//
-// Formula: u = (1 + y) / (1 - y) mod p, where y is the Edwards y-coord.
+// ed25519PubToCurve: u = (1 + y) / (1 - y) mod p.
 func ed25519PubToCurve(pub ed25519.PublicKey) ([]byte, error) {
 	if len(pub) != 32 {
 		return nil, fmt.Errorf("ed25519PubToCurve: need 32 bytes, got %d", len(pub))
@@ -267,9 +259,8 @@ func ed25519PubToCurve(pub ed25519.PublicKey) ([]byte, error) {
 	return p.BytesMontgomery(), nil
 }
 
-// ed25519PrivToCurveScalar extracts the Curve25519 scalar from an
-// Ed25519 private key by SHA-512'ing the 32-byte seed and clamping the
-// low 32 bytes per RFC 7748.
+// ed25519PrivToCurveScalar derives the Curve25519 scalar from an Ed25519
+// seed: SHA-512(seed)[:32] with RFC 7748 clamping.
 func ed25519PrivToCurveScalar(priv ed25519.PrivateKey) ([]byte, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("ed25519PrivToCurveScalar: bad size %d", len(priv))
@@ -284,10 +275,7 @@ func ed25519PrivToCurveScalar(priv ed25519.PrivateKey) ([]byte, error) {
 	return out, nil
 }
 
-// buildFounderSharedKey constructs the ChangeSetSharedKey payload for
-// a freshly-created call. Algorithm mirrors tde2e/Call.cpp.
-func buildFounderSharedKey(founderPriv ed25519.PrivateKey, participants []GroupParticipant) (SharedKeyTL, error) {
-	// Ephemeral Ed25519 keypair (acts as the broadcast "ek").
+func BuildSharedKey(participants []GroupParticipant) (SharedKeyTL, error) {
 	ePub, ePriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return SharedKeyTL{}, fmt.Errorf("eph keygen: %w", err)
@@ -324,7 +312,6 @@ func buildFounderSharedKey(founderPriv ed25519.PrivateKey, participants []GroupP
 
 	var ek [32]byte
 	copy(ek[:], ePub)
-	_ = founderPriv
 	return SharedKeyTL{
 		EphemeralKey:       ek,
 		EncryptedSharedKey: string(encGroupSharedKey),
@@ -339,9 +326,7 @@ func hmacSHA512(key, data []byte) []byte {
 	return h.Sum(nil)
 }
 
-func sha256Sum(b []byte) [32]byte { return sha256.Sum256(b) }
-
-// DeriveGroupSharedKey: group_shared_key = HMAC-SHA512(raw, block_hash)[0:32]
+// DeriveGroupSharedKey: HMAC-SHA512(raw, block_hash)[0:32].
 func DeriveGroupSharedKey(raw [32]byte, blockHash [32]byte) [32]byte {
 	mac := hmacSHA512(raw[:], blockHash[:])
 	var out [32]byte
@@ -349,7 +334,7 @@ func DeriveGroupSharedKey(raw [32]byte, blockHash [32]byte) [32]byte {
 	return out
 }
 
-// ComputeSharedSecret performs X25519 ECDH.
+// ComputeSharedSecret performs raw X25519 ECDH.
 func ComputeSharedSecret(priv [32]byte, peerPub [32]byte) ([32]byte, error) {
 	out, err := curve25519.X25519(priv[:], peerPub[:])
 	if err != nil {
@@ -360,10 +345,221 @@ func ComputeSharedSecret(priv [32]byte, peerPub [32]byte) ([32]byte, error) {
 	return k, nil
 }
 
-func readU32LE(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
+// PacketCipher manages encryption state for outgoing packets and decrypts incoming packets, using the active epochs from the chain to determine which keys to use. It also tracks per-channel sequence numbers for replay protection.
+type PacketCipher struct {
+	chain *Chain
+	self  ed25519.PrivateKey
 
-func appendU64LE(b []byte, v uint64) []byte {
-	var tmp [8]byte
-	binary.LittleEndian.PutUint64(tmp[:], v)
-	return append(b, tmp[:]...)
+	seqMu sync.Mutex
+	seq   map[int32]uint32
+}
+
+type DecryptedPacket struct {
+	ChannelID         int32
+	Seq               uint32
+	Payload           []byte
+	UnencryptedPrefix []byte
+}
+
+func NewPacketCipher(chain *Chain, self ed25519.PrivateKey) *PacketCipher {
+	return &PacketCipher{
+		chain: chain,
+		self:  self,
+		seq:   make(map[int32]uint32),
+	}
+}
+
+func (pc *PacketCipher) nextSeq(channelID int32) (uint32, error) {
+	pc.seqMu.Lock()
+	defer pc.seqMu.Unlock()
+	cur := pc.seq[channelID]
+	if cur == ^uint32(0) {
+		return 0, errors.New("e2e: seqno overflow — must leave the call")
+	}
+	cur++
+	pc.seq[channelID] = cur
+	return cur, nil
+}
+
+// EncryptPacket wraps a media frame as a wire-form E2E packet.
+// unencryptedHeaderLength is the cleartext prefix (0 for Opus, codec header
+// size for VP8/H264).
+func (pc *PacketCipher) EncryptPacket(channelID int32, data []byte, unencryptedHeaderLength int) ([]byte, error) {
+	if unencryptedHeaderLength < 0 || unencryptedHeaderLength > len(data) || unencryptedHeaderLength >= (1<<16) {
+		return nil, fmt.Errorf("e2e: invalid unencryptedHeaderLength %d (data=%d)", unencryptedHeaderLength, len(data))
+	}
+	if channelID < 0 || channelID > 1023 {
+		return nil, fmt.Errorf("e2e: invalid channel_id %d", channelID)
+	}
+
+	epochs := pc.chain.ActiveEpochs()
+	if len(epochs) == 0 {
+		return nil, errors.New("e2e: no active epoch")
+	}
+
+	unencryptedPrefix := data[:unencryptedHeaderLength]
+	decryptedData := data[unencryptedHeaderLength:]
+
+	headerA := make([]byte, 0, 4+len(epochs)*32)
+	headerA = appendI32LE(headerA, int32(len(epochs)))
+	for _, ep := range epochs {
+		headerA = append(headerA, ep.BlockHash[:]...)
+	}
+
+	var oneTimeSecret [32]byte
+	if _, err := rand.Read(oneTimeSecret[:]); err != nil {
+		return nil, fmt.Errorf("e2e: rand: %w", err)
+	}
+
+	seq, err := pc.nextSeq(channelID)
+	if err != nil {
+		return nil, err
+	}
+	payload := make([]byte, 0, 8+len(decryptedData))
+	payload = appendI32LE(payload, channelID)
+	payload = appendU32LE(payload, seq)
+	payload = append(payload, decryptedData...)
+
+	extra := make([]byte, 0, 4+len(headerA)+len(unencryptedPrefix))
+	extra = append(extra, magicCallPacket...)
+	extra = append(extra, headerA...)
+	extra = append(extra, unencryptedPrefix...)
+
+	encryptedPayload, largeMsgID, err := EncryptDataTDE2EWithLargeMsgID(oneTimeSecret[:], payload, extra)
+	if err != nil {
+		return nil, fmt.Errorf("e2e: encrypt_data: %w", err)
+	}
+
+	headerB := make([]byte, 0, len(epochs)*32)
+	for _, ep := range epochs {
+		secret := ep.GroupSharedKey
+		eh, err := EncryptHeaderTDE2E(oneTimeSecret[:], encryptedPayload, secret[:])
+		if err != nil {
+			return nil, fmt.Errorf("e2e: encrypt_header: %w", err)
+		}
+		if len(eh) != 32 {
+			return nil, fmt.Errorf("e2e: encrypt_header returned %d bytes, want 32", len(eh))
+		}
+		headerB = append(headerB, eh...)
+	}
+
+	toSign := make([]byte, 0, 4+32)
+	toSign = append(toSign, magicCallPacketLargeMsgID...)
+	toSign = append(toSign, largeMsgID[:]...)
+	sig := ed25519.Sign(pc.self, toSign)
+
+	encryptedPacket := make([]byte, 0, len(encryptedPayload)+len(sig))
+	encryptedPacket = append(encryptedPacket, encryptedPayload...)
+	encryptedPacket = append(encryptedPacket, sig...)
+
+	out := make([]byte, 0, len(unencryptedPrefix)+len(headerA)+len(headerB)+len(encryptedPacket)+4)
+	out = append(out, unencryptedPrefix...)
+	out = append(out, headerA...)
+	out = append(out, headerB...)
+	out = append(out, encryptedPacket...)
+	out = appendU32LE(out, uint32(unencryptedHeaderLength))
+	return out, nil
+}
+
+// DecryptIncomingPacket decrypts a remote packet, verifying its signature
+// against the sender's public key (looked up by the caller via SSRC).
+func (pc *PacketCipher) DecryptIncomingPacket(data []byte, senderPub ed25519.PublicKey) (*DecryptedPacket, error) {
+	if len(data) < 4 {
+		return nil, errors.New("e2e: packet too short")
+	}
+	prefixLen := int(binary.LittleEndian.Uint32(data[len(data)-4:]))
+	if prefixLen < 0 || prefixLen >= (1<<16) || prefixLen > len(data)-4 {
+		return nil, fmt.Errorf("e2e: bad trailer prefixLen %d", prefixLen)
+	}
+	body := data[prefixLen : len(data)-4]
+	unencryptedPrefix := data[:prefixLen]
+	if len(body) < 4 {
+		return nil, errors.New("e2e: body too short for header_a")
+	}
+	n := int(binary.LittleEndian.Uint32(body[:4]))
+	if n <= 0 {
+		return nil, fmt.Errorf("e2e: bad epoch count %d", n)
+	}
+	headerALen := 4 + n*32
+	headerBLen := n * 32
+	if len(body) < headerALen+headerBLen+16+64 {
+		return nil, fmt.Errorf("e2e: packet length %d too short for epochs=%d", len(body), n)
+	}
+	epochs := pc.chain.ActiveEpochs()
+	if len(epochs) == 0 {
+		return nil, errors.New("e2e: no active epoch")
+	}
+	headerA := body[:headerALen]
+	headerB := body[headerALen : headerALen+headerBLen]
+	encryptedPacket := body[headerALen+headerBLen:]
+	if len(encryptedPacket) < 16+64 {
+		return nil, errors.New("e2e: encrypted packet too short")
+	}
+	encryptedPayload := encryptedPacket[:len(encryptedPacket)-64]
+	sig := encryptedPacket[len(encryptedPacket)-64:]
+	extra := make([]byte, 0, 4+len(headerA)+len(unencryptedPrefix))
+	extra = append(extra, magicCallPacket...)
+	extra = append(extra, headerA...)
+	extra = append(extra, unencryptedPrefix...)
+
+	// msg_id check, and try every matching epoch.
+	var plain []byte
+	var largeMsgID [32]byte
+	var lastErr error
+	for j := range n {
+		pktHash := headerA[4+j*32 : 4+(j+1)*32]
+		for _, ep := range epochs {
+			if string(pktHash) != string(ep.BlockHash[:]) {
+				continue
+			}
+			ots, herr := DecryptHeaderTDE2E(headerB[j*32:(j+1)*32], encryptedPayload, ep.GroupSharedKey[:])
+			if herr != nil {
+				lastErr = herr
+				continue
+			}
+			p, lmid, derr := DecryptDataTDE2EWithExtra(ots, encryptedPayload, extra)
+			if derr != nil {
+				lastErr = derr
+				continue
+			}
+			plain = p
+			largeMsgID = lmid
+		}
+		if plain != nil {
+			break
+		}
+	}
+	if plain == nil {
+		if lastErr == nil {
+			lastErr = errors.New("no matching epoch")
+		}
+		return nil, fmt.Errorf("e2e: decrypt failed: %w", lastErr)
+	}
+	toVerify := make([]byte, 0, 4+32)
+	toVerify = append(toVerify, magicCallPacketLargeMsgID...)
+	toVerify = append(toVerify, largeMsgID[:]...)
+	if !ed25519.Verify(senderPub, toVerify, sig) {
+		return nil, errors.New("e2e: signature verify failed")
+	}
+	if len(plain) < 8 {
+		return nil, errors.New("e2e: plaintext too short")
+	}
+	return &DecryptedPacket{
+		ChannelID:         int32(binary.LittleEndian.Uint32(plain[:4])),
+		Seq:               binary.LittleEndian.Uint32(plain[4:8]),
+		Payload:           plain[8:],
+		UnencryptedPrefix: append([]byte(nil), unencryptedPrefix...),
+	}, nil
+}
+
+func appendI32LE(b []byte, v int32) []byte {
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], uint32(v))
+	return append(b, buf[:]...)
+}
+
+func appendU32LE(b []byte, v uint32) []byte {
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], v)
+	return append(b, buf[:]...)
 }
