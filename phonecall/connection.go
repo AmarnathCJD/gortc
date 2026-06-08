@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/transport"
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
@@ -63,12 +62,12 @@ type connection struct {
 	onTrack        func(*webrtc.TrackRemote, *webrtc.RTPReceiver)
 	state          string
 
-	log *logger.Logger
+	log *transport.Logger
 }
 
-func newConnection(isOutgoing bool, log *logger.Logger) *connection {
+func newConnection(isOutgoing bool, log *transport.Logger) *connection {
 	if log == nil {
-		log = logger.Disabled()
+		log = transport.DisabledLogger()
 	}
 	return &connection{isOutgoing: isOutgoing, log: log}
 }

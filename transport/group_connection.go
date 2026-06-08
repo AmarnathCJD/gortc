@@ -7,18 +7,21 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/amarnathcjd/gortc/logger"
 	wutil "github.com/amarnathcjd/gortc/webrtc"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 )
@@ -134,16 +137,16 @@ type GroupConnection struct {
 	srflxReady chan struct{}
 	srflxOnce  sync.Once
 
-	log *logger.Logger
+	log *Logger
 }
 
 func (gc *GroupConnection) Dispatcher() *Dispatcher {
 	return gc.dispatcher
 }
 
-func NewGroupConnection(log *logger.Logger) *GroupConnection {
+func NewGroupConnection(log *Logger) *GroupConnection {
 	if log == nil {
-		log = logger.Disabled()
+		log = DisabledLogger()
 	}
 	return &GroupConnection{log: log}
 }
@@ -910,4 +913,68 @@ func findRemotePort(candidates []Candidate) int {
 		}
 	}
 	return 1
+}
+
+type Logger struct {
+	sl *slog.Logger
+}
+
+type LogOption func(*logConfig)
+
+type logConfig struct {
+	level   slog.Level
+	out     io.Writer
+	handler slog.Handler
+}
+
+func WithLogLevel(l slog.Level) LogOption {
+	return func(c *logConfig) { c.level = l }
+}
+
+func WithLogOutput(w io.Writer) LogOption {
+	return func(c *logConfig) { c.out = w }
+}
+
+func WithLogHandler(h slog.Handler) LogOption {
+	return func(c *logConfig) { c.handler = h }
+}
+
+func NewLogger(opts ...LogOption) *Logger {
+	c := &logConfig{level: slog.LevelWarn, out: os.Stderr}
+	for _, o := range opts {
+		o(c)
+	}
+	h := c.handler
+	if h == nil {
+		h = slog.NewTextHandler(c.out, &slog.HandlerOptions{Level: c.level})
+	}
+	return &Logger{sl: slog.New(h)}
+}
+
+func LoggerFrom(sl *slog.Logger) *Logger {
+	if sl == nil {
+		return DisabledLogger()
+	}
+	return &Logger{sl: sl}
+}
+
+func DisabledLogger() *Logger {
+	h := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1})
+	return &Logger{sl: slog.New(h)}
+}
+
+func (l *Logger) With(args ...any) *Logger {
+	return &Logger{sl: l.sl.With(args...)}
+}
+
+func (l *Logger) Debugf(format string, args ...any) { l.logf(slog.LevelDebug, format, args...) }
+func (l *Logger) Infof(format string, args ...any)  { l.logf(slog.LevelInfo, format, args...) }
+func (l *Logger) Warnf(format string, args ...any)  { l.logf(slog.LevelWarn, format, args...) }
+func (l *Logger) Errorf(format string, args ...any) { l.logf(slog.LevelError, format, args...) }
+
+func (l *Logger) logf(level slog.Level, format string, args ...any) {
+	if l == nil || l.sl == nil || !l.sl.Enabled(context.Background(), level) {
+		return
+	}
+	l.sl.Log(context.Background(), level, fmt.Sprintf(format, args...))
 }

@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/media"
 	"github.com/amarnathcjd/gortc/transport"
 
@@ -28,7 +27,7 @@ type GroupCall struct {
 	call       *telegram.InputGroupCall
 	audioTrack *webrtc.TrackLocalStaticRTP
 	videoTrack *webrtc.TrackLocalStaticRTP
-	log        *logger.Logger
+	log        *transport.Logger
 
 	chatID         any
 	leaving        bool
@@ -74,7 +73,7 @@ func (gc *GroupCall) State() string { return gc.conn.State() }
 type Option func(*GroupCall)
 
 // WithLogger sets the logger for the call and its transport (default: WARN+).
-func WithLogger(l *logger.Logger) Option {
+func WithLogger(l *transport.Logger) Option {
 	return func(gc *GroupCall) {
 		if l != nil {
 			gc.log = l
@@ -85,7 +84,7 @@ func WithLogger(l *logger.Logger) Option {
 // WithLogLevel bumps the default logger's verbosity, e.g. slog.LevelDebug.
 func WithLogLevel(level slog.Level) Option {
 	return func(gc *GroupCall) {
-		gc.log = logger.New(logger.WithLevel(level))
+		gc.log = transport.NewLogger(transport.WithLogLevel(level))
 	}
 }
 
@@ -104,7 +103,7 @@ func WithReconnect(attempts int, base, maxBackoff time.Duration) Option {
 func New(client *telegram.Client, opts ...Option) *GroupCall {
 	gc := &GroupCall{
 		client: client,
-		log:    logger.New(),
+		log:    transport.NewLogger(),
 		reconnect: reconnectPolicy{
 			enabled:     false,
 			maxAttempts: 0,

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 )
@@ -106,12 +105,12 @@ func BuildMediaEngine() (*webrtc.MediaEngine, error) {
 	return m, nil
 }
 
-func BuildInterceptorRegistry(m *webrtc.MediaEngine, log *logger.Logger) (*interceptor.Registry, error) {
+func BuildInterceptorRegistry(m *webrtc.MediaEngine, log *Logger) (*interceptor.Registry, error) {
 	i := &interceptor.Registry{}
 	if err := webrtc.RegisterDefaultInterceptors(m, i); err != nil {
 		return nil, fmt.Errorf("register interceptors: %w", err)
 	}
-	i.Add(&logger.RTPDump{Log: log.With("subsystem", "rtp-dump")})
+	i.Add(&RTPDump{Log: log.With("subsystem", "rtp-dump")})
 	i.Add(&MarkerClearInterceptorFactory{})
 	i.Add(&AudioLevelInterceptorFactory{})
 	return i, nil

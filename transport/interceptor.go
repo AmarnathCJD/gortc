@@ -8,6 +8,7 @@ package transport
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
@@ -98,4 +99,34 @@ func (m *markerClearInterceptor) BindLocalStream(info *interceptor.StreamInfo, w
 		header.Marker = false
 		return writer.Write(header, payload, attrs)
 	})
+}
+
+type RTPDump struct {
+	Log *Logger
+}
+
+func (f *RTPDump) NewInterceptor(string) (interceptor.Interceptor, error) {
+	log := f.Log
+	if log == nil {
+		log = DisabledLogger()
+	}
+	return &rtpDump{log: log}, nil
+}
+
+type rtpDump struct {
+	interceptor.NoOp
+	log *Logger
+	n   atomic.Uint64
+}
+
+func (d *rtpDump) BindLocalStream(info *interceptor.StreamInfo, w interceptor.RTPWriter) interceptor.RTPWriter {
+	d.log.Debugf("bind ssrc=%d pt=%d mime=%s clock=%d", info.SSRC, info.PayloadType, info.MimeType, info.ClockRate)
+	return interceptor.RTPWriterFunc(func(h *webrtc.RtpHeader, payload []byte, a interceptor.Attributes) (int, error) {
+		d.n.Add(1)
+		return w.Write(h, payload, a)
+	})
+}
+
+func (d *rtpDump) UnbindLocalStream(info *interceptor.StreamInfo) {
+	d.log.Debugf("unbind ssrc=%d total=%d", info.SSRC, d.n.Load())
 }

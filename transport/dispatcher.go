@@ -7,10 +7,11 @@ package transport
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 	wutil "github.com/amarnathcjd/gortc/webrtc"
+	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 )
 
 type Dispatcher struct {
@@ -25,6 +26,14 @@ type Dispatcher struct {
 	encMu          sync.RWMutex
 	audioPayloadFn func(p *wutil.RtpPacket) error
 	videoPayloadFn func(p *wutil.RtpPacket) error
+
+	audioLastTS   atomic.Uint32
+	audioPktCount atomic.Uint32
+	audioOctets   atomic.Uint32
+}
+
+func (d *Dispatcher) AudioStats() (lastTS, packets, octets uint32) {
+	return d.audioLastTS.Load(), d.audioPktCount.Load(), d.audioOctets.Load()
 }
 
 func (d *Dispatcher) SetAudioPayloadEncoder(fn func(p *wutil.RtpPacket) error) {
@@ -100,6 +109,9 @@ func (d *Dispatcher) run() {
 							continue
 						}
 					}
+					d.audioLastTS.Store(p.RtpHeader.Timestamp)
+					d.audioPktCount.Add(1)
+					d.audioOctets.Add(uint32(len(p.Payload)))
 					_ = d.audio.WriteRTP(p)
 				}
 				continue

@@ -9,8 +9,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"io"
+
 	"github.com/amarnathcjd/gortc/webrtc"
 )
 
@@ -21,6 +21,7 @@ type oggWriter struct {
 	pageIndex  uint32
 	sampleRate uint32
 	channels   uint8
+	preSkip    uint16
 
 	granule       uint64
 	lastTimestamp uint32
@@ -29,9 +30,34 @@ type oggWriter struct {
 	closed bool
 }
 
-var oggCRCTable = crc32.MakeTable(0x04c11db7)
+var oggCRCTable = func() [256]uint32 {
+	var t [256]uint32
+	for i := range 256 {
+		c := uint32(i) << 24
+		for j := 0; j < 8; j++ {
+			if c&0x80000000 != 0 {
+				c = (c << 1) ^ 0x04c11db7
+			} else {
+				c <<= 1
+			}
+		}
+		t[i] = c
+	}
+	return t
+}()
+
+func oggCRC(crc uint32, b []byte) uint32 {
+	for _, x := range b {
+		crc = (crc << 8) ^ oggCRCTable[byte(crc>>24)^x]
+	}
+	return crc
+}
 
 func newOggWriter(w io.WriteCloser, sampleRate uint32, channels uint8) (*oggWriter, error) {
+	return newOggWriterFull(w, sampleRate, channels, 0)
+}
+
+func newOggWriterFull(w io.WriteCloser, sampleRate uint32, channels uint8, preSkip uint16) (*oggWriter, error) {
 	var sbuf [4]byte
 	if _, err := rand.Read(sbuf[:]); err != nil {
 		return nil, fmt.Errorf("media: oggwriter serial: %w", err)
@@ -41,6 +67,7 @@ func newOggWriter(w io.WriteCloser, sampleRate uint32, channels uint8) (*oggWrit
 		serial:     binary.LittleEndian.Uint32(sbuf[:]),
 		sampleRate: sampleRate,
 		channels:   channels,
+		preSkip:    preSkip,
 	}
 	if err := ow.writeHeaders(); err != nil {
 		return nil, err
@@ -53,7 +80,7 @@ func (o *oggWriter) writeHeaders() error {
 	copy(head[0:8], []byte("OpusHead"))
 	head[8] = 1 // version
 	head[9] = o.channels
-	binary.LittleEndian.PutUint16(head[10:12], 0) // pre-skip
+	binary.LittleEndian.PutUint16(head[10:12], o.preSkip)
 	binary.LittleEndian.PutUint32(head[12:16], o.sampleRate)
 	binary.LittleEndian.PutUint16(head[16:18], 0) // output gain
 	head[18] = 0                                  // mapping family
@@ -99,8 +126,8 @@ func (o *oggWriter) writePage(payload []byte, granule uint64, headerType byte) e
 		}
 	}
 
-	crc := crc32.Update(0, oggCRCTable, header)
-	crc = crc32.Update(crc, oggCRCTable, payload)
+	crc := oggCRC(0, header)
+	crc = oggCRC(crc, payload)
 	binary.LittleEndian.PutUint32(header[22:26], crc)
 
 	if _, err := o.w.Write(header); err != nil {
@@ -120,13 +147,12 @@ func (o *oggWriter) writePacket(p *webrtc.RtpPacket) error {
 	if len(p.Payload) == 0 {
 		return nil
 	}
-	if o.haveTimestamp {
-		delta := p.Timestamp - o.lastTimestamp
-		o.granule += uint64(delta)
-	} else {
-		o.granule += opusPacketSamples(p.Payload)
-		o.haveTimestamp = true
+	samples := opusPacketSamples(p.Payload)
+	if samples == 0 {
+		samples = 960
 	}
+	o.granule += samples
+	o.haveTimestamp = true
 	o.lastTimestamp = p.Timestamp
 	return o.writePage(p.Payload, o.granule, 0x00)
 }
@@ -139,3 +165,36 @@ func (o *oggWriter) Close() error {
 	_ = o.writePage(nil, o.granule, 0x04)
 	return o.w.Close()
 }
+
+// OggOpusRecorder helps to record and save Opus audio from RTP packets into an Ogg file.
+type OggOpusRecorder struct{ inner *oggWriter }
+
+func NewOggOpusRecorder(w io.WriteCloser, sampleRate uint32, channels uint8) (*OggOpusRecorder, error) {
+	return NewOggOpusRecorderWithPreSkip(w, sampleRate, channels, 0)
+}
+
+func NewOggOpusRecorderWithPreSkip(w io.WriteCloser, sampleRate uint32, channels uint8, preSkip uint16) (*OggOpusRecorder, error) {
+	ow, err := newOggWriterFull(w, sampleRate, channels, preSkip)
+	if err != nil {
+		return nil, err
+	}
+	return &OggOpusRecorder{inner: ow}, nil
+}
+
+func (r *OggOpusRecorder) WritePacket(p *webrtc.RtpPacket) error { return r.inner.writePacket(p) }
+
+func (r *OggOpusRecorder) WritePacketWithSamples(p *webrtc.RtpPacket, samples uint64) error {
+	o := r.inner
+	if o.closed {
+		return io.ErrClosedPipe
+	}
+	if len(p.Payload) == 0 {
+		return nil
+	}
+	o.granule += samples
+	o.haveTimestamp = true
+	o.lastTimestamp = p.Timestamp
+	return o.writePage(p.Payload, o.granule, 0x00)
+}
+
+func (r *OggOpusRecorder) Close() error { return r.inner.Close() }

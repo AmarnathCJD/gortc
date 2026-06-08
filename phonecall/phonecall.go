@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amarnathcjd/gortc/logger"
 	"github.com/amarnathcjd/gortc/media"
+	"github.com/amarnathcjd/gortc/transport"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 
 	"github.com/amarnathcjd/gogram/telegram"
@@ -67,7 +67,7 @@ func intersectVersions(a, b []string) []string {
 
 type Option func(*PhoneCall)
 
-func WithLogger(l *logger.Logger) Option {
+func WithLogger(l *transport.Logger) Option {
 	return func(pc *PhoneCall) {
 		if l != nil {
 			pc.log = l
@@ -77,13 +77,13 @@ func WithLogger(l *logger.Logger) Option {
 
 func WithLogLevel(level slog.Level) Option {
 	return func(pc *PhoneCall) {
-		pc.log = logger.New(logger.WithLevel(level))
+		pc.log = transport.NewLogger(transport.WithLogLevel(level))
 	}
 }
 
 type PhoneCall struct {
 	client *telegram.Client
-	log    *logger.Logger
+	log    *transport.Logger
 
 	mu       sync.Mutex
 	dh       *dhParams
@@ -111,7 +111,7 @@ type PhoneCall struct {
 func New(client *telegram.Client, opts ...Option) *PhoneCall {
 	pc := &PhoneCall{
 		client:    client,
-		log:       logger.New(),
+		log:       transport.NewLogger(),
 		accepted:  make(chan *telegram.PhoneCallAccepted, 1),
 		confirmed: make(chan *telegram.PhoneCallObj, 1),
 		discarded: make(chan *telegram.PhoneCallDiscarded, 1),
