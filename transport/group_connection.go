@@ -162,28 +162,10 @@ func (gc *GroupConnection) generateSsrcs() {
 	if gc.outgoingVideoSsrc > 0x7ffffff0 {
 		gc.outgoingVideoSsrc = 2
 	}
-
-	numLayers := 3
-	var simSsrcs []int32
-	var fidGroups []SsrcGroup
-
-	for i := 0; i < numLayers; i++ {
-		ssrc := gc.outgoingVideoSsrc + uint32(i*2)
-		fidSsrc := gc.outgoingVideoSsrc + uint32(i*2+1)
-		simSsrcs = append(simSsrcs, int32(ssrc))
-		fidGroups = append(fidGroups, SsrcGroup{
-			Semantics: "FID",
-			Sources:   []int32{int32(ssrc), int32(fidSsrc)},
-		})
-	}
-
-	if len(simSsrcs) > 1 {
-		gc.videoSsrcGroups = append(gc.videoSsrcGroups, SsrcGroup{
-			Semantics: "SIM",
-			Sources:   simSsrcs,
-		})
-	}
-	gc.videoSsrcGroups = append(gc.videoSsrcGroups, fidGroups...)
+	gc.videoSsrcGroups = []SsrcGroup{{
+		Semantics: "FID",
+		Sources:   []int32{int32(gc.outgoingVideoSsrc), int32(gc.outgoingVideoSsrc + 1)},
+	}}
 }
 
 func (gc *GroupConnection) Open() error {
@@ -483,14 +465,16 @@ func (gc *GroupConnection) GetJoinPayload() (string, error) {
 
 	if gc.videoSender != nil {
 		if enc := gc.videoSender.GetParameters().Encodings; len(enc) > 0 && enc[0].SSRC != 0 {
-			videoSSRC := uint32(enc[0].SSRC)
-			gc.outgoingVideoSsrc = videoSSRC
-			gc.videoSsrcGroups = gc.videoSsrcGroups[:0]
-			gc.videoSsrcGroups = append(gc.videoSsrcGroups, SsrcGroup{
+			bound := uint32(enc[0].SSRC)
+			if bound != gc.outgoingVideoSsrc {
+				gc.log.Warnf("video SSRC drift: generated=%d bound=%d — advertising bound value", gc.outgoingVideoSsrc, bound)
+			}
+			gc.outgoingVideoSsrc = bound
+			gc.videoSsrcGroups = []SsrcGroup{{
 				Semantics: "FID",
-				Sources:   []int32{int32(videoSSRC), int32(videoSSRC + 1)},
-			})
-			gc.log.Debugf("advertising video SSRC=%d (FID rtx=%d)", videoSSRC, videoSSRC+1)
+				Sources:   []int32{int32(bound), int32(bound + 1)},
+			}}
+			gc.log.Debugf("advertising video SSRC=%d (FID rtx=%d, matches wire)", bound, bound+1)
 		}
 	}
 
@@ -618,12 +602,17 @@ func (gc *GroupConnection) AddVideoTrack(codecMime string) (*webrtc.TrackLocalSt
 		return nil, fmt.Errorf("create video track: %w", err)
 	}
 
-	sender, err := gc.pc.AddTrack(track)
+	transceiver, err := gc.pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionSendrecv,
+		SendEncodings: []webrtc.RTPEncodingParameters{
+			{RTPCodingParameters: webrtc.RTPCodingParameters{SSRC: webrtc.SSRC(gc.outgoingVideoSsrc)}},
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("add video track: %w", err)
 	}
 	gc.videoTrack = track
-	gc.videoSender = sender
+	gc.videoSender = transceiver.Sender()
 	gc.tryStartDispatcher()
 	return track, nil
 }
@@ -632,14 +621,20 @@ func (gc *GroupConnection) VideoSender() *webrtc.RTPSender { return gc.videoSend
 func (gc *GroupConnection) AudioSender() *webrtc.RTPSender { return gc.audioSender }
 
 func (gc *GroupConnection) tryStartDispatcher() {
-	if gc.dispatcher != nil {
-		return
-	}
 	if gc.audioTrack == nil && gc.videoTrack == nil {
 		return
 	}
-	gc.dispatcher = NewDispatcher(gc.audioTrack, gc.videoTrack)
-	gc.dispatcher.Start()
+	if gc.dispatcher == nil {
+		gc.dispatcher = NewDispatcher(gc.audioTrack, gc.videoTrack)
+		gc.dispatcher.Start()
+		return
+	}
+	if gc.audioTrack != nil {
+		gc.dispatcher.SetAudioTrack(gc.audioTrack)
+	}
+	if gc.videoTrack != nil {
+		gc.dispatcher.SetVideoTrack(gc.videoTrack)
+	}
 }
 
 func (gc *GroupConnection) OnTrack(handler func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)) {
@@ -716,10 +711,6 @@ func (gc *GroupConnection) StartAudioRTCP() {
 				pc.ConnectionState() == webrtc.PeerConnectionStateFailed {
 				return false
 			}
-			// Always emit an SR — even when no audio has been sent yet — so the
-			// Telegram SFU's egress mapping for our SSRC is set up immediately on
-			// connect. Without this, audio that starts streaming 10s+ after connect
-			// (e.g. after waiting for E2E peer verification) is dropped silently.
 			lastTS, pkts, octets := d.AudioStats()
 			sr := &wutil.RtcpSenderReport{
 				SSRC:        ssrc,
@@ -752,6 +743,49 @@ func (gc *GroupConnection) StartAudioRTCP() {
 
 func (gc *GroupConnection) OutgoingVideoSsrc() uint32 {
 	return gc.outgoingVideoSsrc
+}
+
+func (gc *GroupConnection) StartVideoRTCP() {
+	go func() {
+		sendSR := func() bool {
+			gc.mu.Lock()
+			pc := gc.pc
+			d := gc.dispatcher
+			ssrc := gc.outgoingVideoSsrc
+			gc.mu.Unlock()
+			if pc == nil || d == nil || ssrc == 0 {
+				return false
+			}
+			if pc.ConnectionState() == webrtc.PeerConnectionStateClosed ||
+				pc.ConnectionState() == webrtc.PeerConnectionStateFailed {
+				return false
+			}
+			pkts, octets := d.VideoStats()
+			sr := &wutil.RtcpSenderReport{
+				SSRC:        ssrc,
+				NTPTime:     wutil.NowNTP(),
+				PacketCount: pkts,
+				OctetCount:  octets,
+			}
+			if err := pc.WriteRTCP([]wutil.RtcpPacket{sr}); err != nil {
+				gc.log.Debugf("[rtcp] write video SR: %v", err)
+			}
+			return true
+		}
+		for range 5 {
+			if !sendSR() {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !sendSR() {
+				return
+			}
+		}
+	}()
 }
 
 func extractAudioVideoSSRCs(sdp string) (audio, video uint32) {

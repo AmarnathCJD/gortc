@@ -30,10 +30,28 @@ type Dispatcher struct {
 	audioLastTS   atomic.Uint32
 	audioPktCount atomic.Uint32
 	audioOctets   atomic.Uint32
+	videoPktCount atomic.Uint32
+	videoOctets   atomic.Uint32
+}
+
+func (d *Dispatcher) VideoStats() (packets, octets uint32) {
+	return d.videoPktCount.Load(), d.videoOctets.Load()
 }
 
 func (d *Dispatcher) AudioStats() (lastTS, packets, octets uint32) {
 	return d.audioLastTS.Load(), d.audioPktCount.Load(), d.audioOctets.Load()
+}
+
+func (d *Dispatcher) SetAudioTrack(t *webrtc.TrackLocalStaticRTP) {
+	d.encMu.Lock()
+	d.audio = t
+	d.encMu.Unlock()
+}
+
+func (d *Dispatcher) SetVideoTrack(t *webrtc.TrackLocalStaticRTP) {
+	d.encMu.Lock()
+	d.video = t
+	d.encMu.Unlock()
 }
 
 func (d *Dispatcher) SetAudioPayloadEncoder(fn func(p *wutil.RtpPacket) error) {
@@ -100,10 +118,11 @@ func (d *Dispatcher) run() {
 		for {
 			select {
 			case p := <-d.audioCh:
-				if d.audio != nil {
-					d.encMu.RLock()
-					fn := d.audioPayloadFn
-					d.encMu.RUnlock()
+				d.encMu.RLock()
+				audio := d.audio
+				fn := d.audioPayloadFn
+				d.encMu.RUnlock()
+				if audio != nil {
 					if fn != nil {
 						if err := fn(p); err != nil {
 							continue
@@ -112,7 +131,7 @@ func (d *Dispatcher) run() {
 					d.audioLastTS.Store(p.RtpHeader.Timestamp)
 					d.audioPktCount.Add(1)
 					d.audioOctets.Add(uint32(len(p.Payload)))
-					_ = d.audio.WriteRTP(p)
+					_ = audio.WriteRTP(p)
 				}
 				continue
 			default:
@@ -123,17 +142,20 @@ func (d *Dispatcher) run() {
 		for budget := videoByteBudgetPerTick; budget > 0; {
 			select {
 			case p := <-d.videoCh:
-				if d.video != nil {
-					d.encMu.RLock()
-					fn := d.videoPayloadFn
-					d.encMu.RUnlock()
+				d.encMu.RLock()
+				video := d.video
+				fn := d.videoPayloadFn
+				d.encMu.RUnlock()
+				if video != nil {
 					if fn != nil {
 						if err := fn(p); err != nil {
 							budget = 0
 							continue
 						}
 					}
-					_ = d.video.WriteRTP(p)
+					_ = video.WriteRTP(p)
+					d.videoPktCount.Add(1)
+					d.videoOctets.Add(uint32(len(p.Payload)))
 				}
 				budget -= len(p.Payload)
 			default:

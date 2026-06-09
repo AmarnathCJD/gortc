@@ -197,6 +197,8 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 		gc.reconnMu.Lock()
 		gc.everConnected = true
 		gc.reconnMu.Unlock()
+		gc.conn.StartAudioRTCP()
+		gc.conn.StartVideoRTCP()
 		select {
 		case connected <- struct{}{}:
 		default:
@@ -270,10 +272,11 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 		}
 
 		updates, err := gc.client.PhoneJoinGroupCall(&telegram.PhoneJoinGroupCallParams{
-			Call:   *call,
-			JoinAs: &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
-			Params: &telegram.DataJson{Data: joinPayload},
-			Muted:  false,
+			Call:         *call,
+			JoinAs:       &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
+			Params:       &telegram.DataJson{Data: joinPayload},
+			Muted:        false,
+			VideoStopped: false,
 		})
 		if err != nil {
 			return "", fmt.Errorf("join group call: %w", err)
