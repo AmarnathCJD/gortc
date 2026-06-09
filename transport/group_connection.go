@@ -257,8 +257,8 @@ func (gc *GroupConnection) Open() error {
 			statsPollStop = stop
 			go gc.pollICEStats(pc, stop)
 
-			iceStuckTimer = time.AfterFunc(12*time.Second, func() {
-				gc.log.Warnf("[ice] stuck in checking for 12s; Telegram edge server unreachable — signalling rejoin")
+			iceStuckTimer = time.AfterFunc(5*time.Second, func() {
+				gc.log.Warnf("[ice] stuck in checking for 5s; Telegram edge server unreachable — signalling rejoin")
 				gc.fireICEFailed()
 			})
 		}
@@ -288,6 +288,7 @@ func (gc *GroupConnection) Open() error {
 func (gc *GroupConnection) pollICEStats(pc *webrtc.PeerConnection, stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	start := time.Now()
 	for {
 		select {
 		case <-stop:
@@ -303,6 +304,11 @@ func (gc *GroupConnection) pollICEStats(pc *webrtc.PeerConnection, stop <-chan s
 		if summary.failed == summary.pairs && !summary.anyResponse {
 			gc.log.Warnf("[ice] all %d candidate pairs failed, no STUN responses from Telegram (edge server unreachable from this NAT); %s",
 				summary.pairs, summary.PairString())
+			if time.Since(start) >= 2*time.Second {
+				gc.log.Warnf("[ice] giving up early — all pairs dead, no responses")
+				gc.fireICEFailed()
+				return
+			}
 		}
 	}
 }
@@ -432,7 +438,7 @@ func (gc *GroupConnection) GetJoinPayload() (string, error) {
 		return "", fmt.Errorf("set local description: %w", err)
 	}
 
-	const offerWaitTimeout = 10 * time.Second
+	const offerWaitTimeout = 3 * time.Second
 	select {
 	case <-srflxReady:
 		gc.log.Debugf("[ice-debug] srflx candidate ready, sending offer")

@@ -138,10 +138,10 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 	gc.leaving = false
 	gc.reconnMu.Unlock()
 	gc.installParticipantHandler()
-	const maxAttempts = 3
+	const maxAttempts = 5
 	var lastErr error
 	var cachedServerResponse string
-	backoff := 2 * time.Second
+	backoff := 500 * time.Millisecond
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -151,7 +151,7 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 			gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
 		}
 		reuse := ""
-		if attempt == 2 {
+		if attempt > 1 {
 			reuse = cachedServerResponse
 		}
 		gotResp, err := gc.joinOnce(ctx, chatID, reuse)
@@ -163,7 +163,11 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 		}
 		lastErr = err
 		gc.log.Warnf("join attempt %d failed: %v", attempt, err)
-		_ = gc.leaveCallSilent()
+		if attempt == maxAttempts || cachedServerResponse == "" {
+			_ = gc.leaveCallSilent()
+		} else {
+			_ = gc.conn.Close()
+		}
 
 		if !errors.Is(err, errRetryable) && !transport.IsSignalingNotReady(err) {
 			return err
@@ -175,8 +179,8 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 			case <-time.After(backoff):
 			}
 			backoff *= 2
-			if backoff > 8*time.Second {
-				backoff = 8 * time.Second
+			if backoff > 2*time.Second {
+				backoff = 2 * time.Second
 			}
 		}
 	}
@@ -301,7 +305,7 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 		return serverResponse, fmt.Errorf("%w: disconnected before connected (ICE failed)", errRetryable)
 	case <-ctx.Done():
 		return serverResponse, ctx.Err()
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		return serverResponse, fmt.Errorf("%w: timed out waiting for connected state", errRetryable)
 	}
 }
