@@ -138,10 +138,14 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 	gc.leaving = false
 	gc.reconnMu.Unlock()
 	gc.installParticipantHandler()
-	const maxAttempts = 5
+	retryDelays := []time.Duration{
+		3 * time.Second,
+		5 * time.Second,
+		7 * time.Second,
+		7 * time.Second,
+	}
+	maxAttempts := len(retryDelays) + 1
 	var lastErr error
-	var cachedServerResponse string
-	backoff := 500 * time.Millisecond
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -150,37 +154,24 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 			gc.log.Infof("rejoining (attempt %d/%d)", attempt, maxAttempts)
 			gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
 		}
-		reuse := ""
-		if attempt > 1 {
-			reuse = cachedServerResponse
-		}
-		gotResp, err := gc.joinOnce(ctx, chatID, reuse)
+		_, err := gc.joinOnce(ctx, chatID, "")
 		if err == nil {
 			return nil
 		}
-		if gotResp != "" {
-			cachedServerResponse = gotResp
-		}
 		lastErr = err
 		gc.log.Warnf("join attempt %d failed: %v", attempt, err)
-		if attempt == maxAttempts || cachedServerResponse == "" {
-			_ = gc.leaveCallSilent()
-		} else {
-			_ = gc.conn.Close()
-		}
+		_ = gc.leaveCallSilent()
 
 		if !errors.Is(err, errRetryable) && !transport.IsSignalingNotReady(err) {
 			return err
 		}
 		if attempt < maxAttempts {
+			delay := retryDelays[attempt-1]
+			gc.log.Infof("waiting %s before next join", delay)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-			if backoff > 2*time.Second {
-				backoff = 2 * time.Second
+			case <-time.After(delay):
 			}
 		}
 	}
