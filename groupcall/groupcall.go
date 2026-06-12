@@ -40,6 +40,7 @@ type GroupCall struct {
 	reconnRun      bool
 	reconnect      reconnectPolicy
 	videoCodecMime string
+	stopOnFlood    bool
 
 	participants     *participantStore
 	participantsOnce sync.Once
@@ -104,6 +105,12 @@ func WithReconnect(attempts int, base, maxBackoff time.Duration) Option {
 	}
 }
 
+func WithStopOnFlood() Option {
+	return func(gc *GroupCall) {
+		gc.stopOnFlood = true
+	}
+}
+
 func New(client *telegram.Client, opts ...Option) *GroupCall {
 	gc := &GroupCall{
 		client: client,
@@ -143,9 +150,12 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 		5 * time.Second,
 		7 * time.Second,
 		7 * time.Second,
+		15 * time.Second,
 	}
 	maxAttempts := len(retryDelays) + 1
 	var lastErr error
+	const maxFloodWaits = 3
+	floodWaits := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -161,6 +171,26 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 		lastErr = err
 		gc.log.Warnf("join attempt %d failed: %v", attempt, err)
 		_ = gc.leaveCallSilent()
+
+		if !gc.stopOnFlood && telegram.MatchError(err, "FLOOD_WAIT_") {
+			if floodWaits >= maxFloodWaits {
+				gc.log.Warnf("hit %d flood waits in a row; giving up", floodWaits)
+				return err
+			}
+			wait := time.Duration(telegram.GetFloodWait(err)) * time.Second
+			if wait <= 0 {
+				wait = time.Second
+			}
+			gc.log.Warnf("FLOOD_WAIT from Telegram, sleeping %s before retry", wait)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+			floodWaits++
+			attempt--
+			continue
+		}
 
 		if !errors.Is(err, errRetryable) && !transport.IsSignalingNotReady(err) {
 			return err
