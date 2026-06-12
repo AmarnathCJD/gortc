@@ -194,7 +194,7 @@ func ffmpegVideoArgs(input []string, o EncodeOptions) []string {
 		"-b:v", rate, "-minrate", rate, "-maxrate", rate, "-bufsize", rate,
 		"-rc_lookahead", "16",
 		"-lag-in-frames", "16",
-		"-vf", fmt.Sprintf("scale=%d:%d", o.VideoWidth, o.VideoHeight),
+		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2", o.VideoWidth, o.VideoHeight),
 		"-r", fmt.Sprintf("%d", o.VideoFPS),
 		"-g", gop, "-keyint_min", gop,
 		"-auto-alt-ref", "0",
@@ -238,35 +238,6 @@ func probeDuration(src Source) time.Duration {
 	return time.Duration(secs * float64(time.Second))
 }
 
-func probeVideoSize(path string) (int, int) {
-	if path == "" {
-		return 0, 0
-	}
-	out, err := exec.Command("ffprobe",
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height",
-		"-of", "csv=p=0:s=x",
-		path,
-	).Output()
-	if err != nil {
-		return 0, 0
-	}
-	parts := strings.Split(strings.TrimSpace(string(out)), "x")
-	if len(parts) != 2 {
-		return 0, 0
-	}
-	w, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
-		return 0, 0
-	}
-	h, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err != nil {
-		return 0, 0
-	}
-	return w, h
-}
-
 // transcodeSource runs ffmpeg to produce ogg/ivf from an arbitrary input.
 // input is the ffmpeg -i argument set; stdin, if set, is wired to ffmpeg.
 // path is the plain file/URL (seekable) when not using stdin.
@@ -293,14 +264,7 @@ func (s *transcodeSource) OpenAt(ctx context.Context, offset time.Duration) (*St
 }
 
 func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, error) {
-	o := s.opt
-	if o.VideoWidth == 0 && o.VideoHeight == 0 && s.path != "" {
-		if w, h := probeVideoSize(s.path); w > 0 && h > 0 {
-			o.VideoWidth = w
-			o.VideoHeight = h
-		}
-	}
-	o = o.withDefaults()
+	o := s.opt.withDefaults()
 	st := &Streams{}
 	var procs []*exec.Cmd
 
