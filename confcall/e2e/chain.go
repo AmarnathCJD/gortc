@@ -332,7 +332,10 @@ func (c *Chain) applyChange(ch Change, _ [32]byte) error {
 		raw, err := c.recoverSharedKey(&v.SharedKey)
 		if err != nil {
 			c.lastSharedKeyErr = fmt.Errorf("recover shared key: %w", err)
-			return nil
+			if errors.Is(err, errSelfNotInRecipients) {
+				return nil
+			}
+			return c.lastSharedKeyErr
 		}
 		c.lastSharedKeyErr = nil
 		c.rawSharedKey = raw
@@ -344,6 +347,8 @@ func (c *Chain) applyChange(ch Change, _ [32]byte) error {
 		return fmt.Errorf("unknown change type %T", v)
 	}
 }
+
+var errSelfNotInRecipients = errors.New("self user id not in dest_user_id")
 
 func (c *Chain) recoverSharedKey(sk *SharedKeyTL) ([32]byte, error) {
 	var zero [32]byte
@@ -362,7 +367,7 @@ func (c *Chain) recoverSharedKey(sk *SharedKeyTL) ([32]byte, error) {
 		}
 	}
 	if idx < 0 {
-		return zero, fmt.Errorf("self user id %d not in dest_user_id", c.selfUserID)
+		return zero, errSelfNotInRecipients
 	}
 	encGSK := []byte(sk.EncryptedSharedKey)
 	tryAll := func(ekMode int) ([32]byte, error) {

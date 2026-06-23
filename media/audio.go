@@ -53,6 +53,7 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 
 	var played time.Duration
 	var pending []byte
+	firstPacket := true
 
 	for {
 		if ctrl != nil {
@@ -107,11 +108,14 @@ func streamOggOpus(send Sender, ssrc uint32, reader io.Reader, ctrl *playControl
 					SequenceNumber: seq,
 					Timestamp:      ts,
 					SSRC:           ssrc,
-					Marker:         false,
+					Marker:         firstPacket,
 				},
 				Payload: append([]byte(nil), pkt...),
 			}
-			send.SendAudio(rtpPkt)
+			if ctrl == nil || !ctrl.isMuted() {
+				send.SendAudio(rtpPkt)
+				firstPacket = false
+			}
 
 			seq++
 			ts += uint32(samples)

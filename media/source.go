@@ -161,11 +161,17 @@ type RawVideoFormat struct {
 func ffmpegAudioArgs(input []string, o EncodeOptions) []string {
 	args := []string{"-hide_banner", "-loglevel", "error"}
 	args = append(args, input...)
+	filters := []string{
+		"aresample=resampler=soxr:precision=28",
+		"loudnorm=I=-16:LRA=11:TP=-1.5",
+		"aresample=async=1000",
+	}
 	args = append(args,
 		"-vn",
+		"-af", strings.Join(filters, ","),
 		"-c:a", "libopus",
 		"-b:a", fmt.Sprintf("%dk", o.AudioBitrateKbps),
-		"-vbr", "on",
+		"-vbr", "constrained",
 		"-compression_level", "10",
 		"-frame_duration", "20",
 		"-page_duration", "20000",
@@ -291,6 +297,7 @@ func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, e
 			return nil, err
 		}
 		procs = append(procs, cmd)
+		go func() { _ = cmd.Wait() }()
 		return out, nil
 	}
 

@@ -27,6 +27,7 @@ import (
 // with New, then drive it via JoinCall / Stream / Play / Leave.
 type GroupCall struct {
 	client     *telegram.Client
+	connMu     sync.RWMutex
 	conn       *transport.GroupConnection
 	call       *telegram.InputGroupCall
 	audioTrack *webrtc.TrackLocalStaticRTP
@@ -73,7 +74,25 @@ type reconnectPolicy struct {
 	max         time.Duration
 }
 
-func (gc *GroupCall) State() string { return gc.conn.State() }
+func (gc *GroupCall) connection() *transport.GroupConnection {
+	gc.connMu.RLock()
+	defer gc.connMu.RUnlock()
+	return gc.conn
+}
+
+func (gc *GroupCall) setConnection(c *transport.GroupConnection) {
+	gc.connMu.Lock()
+	gc.conn = c
+	gc.connMu.Unlock()
+}
+
+func (gc *GroupCall) State() string {
+	c := gc.connection()
+	if c == nil {
+		return "new"
+	}
+	return c.State()
+}
 
 type Option func(*GroupCall)
 
@@ -131,7 +150,7 @@ func New(client *telegram.Client, opts ...Option) *GroupCall {
 	if gc.reconnect.max <= 0 {
 		gc.reconnect.max = 30 * time.Second
 	}
-	gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
+	gc.setConnection(transport.NewGroupConnection(gc.log.With("subsystem", "transport")))
 	gc.participants = newParticipantStore()
 	gc.bwe = newBWETracker()
 	return gc
@@ -162,7 +181,7 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 		}
 		if attempt > 1 {
 			gc.log.Infof("rejoining (attempt %d/%d)", attempt, maxAttempts)
-			gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
+			gc.setConnection(transport.NewGroupConnection(gc.log.With("subsystem", "transport")))
 		}
 		_, err := gc.joinOnce(ctx, chatID, "")
 		if err == nil {
@@ -170,6 +189,13 @@ func (gc *GroupCall) JoinCall(ctx context.Context, chatID any) error {
 		}
 		lastErr = err
 		gc.log.Warnf("join attempt %d failed: %v", attempt, err)
+
+		if errors.Is(err, errRetryable) && attempt == 1 {
+			if gc.tryICERestart(ctx) {
+				return nil
+			}
+		}
+
 		_ = gc.leaveCallSilent()
 
 		if !gc.stopOnFlood && telegram.MatchError(err, "FLOOD_WAIT_") {
@@ -215,15 +241,17 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 	}
 	gc.call = call
 
+	conn := gc.connection()
+
 	connected := make(chan struct{}, 1)
 	disconnected := make(chan struct{}, 1)
-	gc.conn.OnConnected(func() {
+	conn.OnConnected(func() {
 		gc.log.Infof("connected to group call")
 		gc.reconnMu.Lock()
 		gc.everConnected = true
 		gc.reconnMu.Unlock()
-		gc.conn.StartAudioRTCP()
-		gc.conn.StartVideoRTCP()
+		conn.StartAudioRTCP()
+		conn.StartVideoRTCP()
 		select {
 		case connected <- struct{}{}:
 		default:
@@ -232,7 +260,7 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 			gc.OnConnected()
 		}
 	})
-	gc.conn.OnDisconnected(func() {
+	conn.OnDisconnected(func() {
 		gc.log.Infof("disconnected from group call")
 		select {
 		case disconnected <- struct{}{}:
@@ -243,30 +271,30 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 		}
 		gc.maybeStartReconnect()
 	})
-	gc.conn.OnStateChange(func(state string) {
+	conn.OnStateChange(func(state string) {
 		if gc.OnStateChange != nil {
 			gc.OnStateChange(state)
 		}
 	})
 
-	if err := gc.conn.Open(); err != nil {
+	if err := conn.Open(); err != nil {
 		return "", fmt.Errorf("open connection: %w", err)
 	}
 
-	gc.conn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	conn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		if gc.OnTrack == nil {
 			return
 		}
 		gc.OnTrack(media.NewIncomingTrack(track))
 	})
 
-	track, err := gc.conn.AddAudioTrack()
+	track, err := conn.AddAudioTrack()
 	if err != nil {
 		return "", fmt.Errorf("add audio track: %w", err)
 	}
 	gc.audioTrack = track
 
-	videoTrack, err := gc.conn.AddVideoTrack(gc.videoCodecMime)
+	videoTrack, err := conn.AddVideoTrack(gc.videoCodecMime)
 	if err != nil {
 		return "", fmt.Errorf("add video track: %w", err)
 	}
@@ -277,10 +305,10 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 			gc.OnBandwidthEstimate(e)
 		}
 	})
-	gc.bwe.attach(gc.conn.VideoSender())
-	gc.bwe.attach(gc.conn.AudioSender())
+	gc.bwe.attach(conn.VideoSender())
+	gc.bwe.attach(conn.AudioSender())
 
-	joinPayload, err := gc.conn.GetJoinPayload()
+	joinPayload, err := conn.GetJoinPayload()
 	if err != nil {
 		return "", fmt.Errorf("get join payload: %w", err)
 	}
@@ -315,7 +343,7 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 
 	gc.log.Debugf("server response: %s", serverResponse)
 
-	if err := gc.conn.Connect(serverResponse); err != nil {
+	if err := conn.Connect(serverResponse); err != nil {
 		return serverResponse, fmt.Errorf("connect: %w", err)
 	}
 
@@ -326,16 +354,137 @@ func (gc *GroupCall) joinOnce(ctx context.Context, chatID any, reuseServerRespon
 		return serverResponse, fmt.Errorf("%w: disconnected before connected (ICE failed)", errRetryable)
 	case <-ctx.Done():
 		return serverResponse, ctx.Err()
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		return serverResponse, fmt.Errorf("%w: timed out waiting for connected state", errRetryable)
 	}
 }
 
-func (gc *GroupCall) leaveCallSilent() error {
-	if gc.call != nil {
-		_, _ = gc.client.PhoneLeaveGroupCall(*gc.call, int32(gc.conn.OutgoingAudioSsrc()))
+func (gc *GroupCall) tryICERestart(ctx context.Context) bool {
+	conn := gc.connection()
+	if conn == nil {
+		return false
 	}
-	return gc.conn.Close()
+	pc := conn.PeerConnection()
+	if pc == nil {
+		return false
+	}
+	switch pc.ConnectionState() {
+	case webrtc.PeerConnectionStateClosed, webrtc.PeerConnectionStateFailed:
+		return false
+	}
+	if gc.call == nil {
+		return false
+	}
+
+	if !conn.GotAnySTUNResponse() {
+		gc.log.Infof("[ice-restart] skipping: previous attempt got 0 STUN responses (network unreachable, not flaky)")
+		return false
+	}
+
+	const maxRestarts = 5
+	backoffs := []time.Duration{
+		2 * time.Second,
+		3 * time.Second,
+		5 * time.Second,
+		7 * time.Second,
+		10 * time.Second,
+	}
+
+	for attempt := 1; attempt <= maxRestarts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		if !gc.runICERestartOnce(ctx, conn, pc, attempt) {
+			if attempt == maxRestarts {
+				gc.log.Warnf("[ice-restart] all %d in-place attempts failed; falling through to leave/rejoin", maxRestarts)
+				return false
+			}
+			wait := backoffs[attempt-1]
+			gc.log.Infof("[ice-restart] attempt %d failed; backing off %s before next restart", attempt, wait)
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(wait):
+			}
+			continue
+		}
+		gc.log.Infof("[ice-restart] reconnected in place after %d attempt(s)", attempt)
+		return true
+	}
+	return false
+}
+
+func (gc *GroupCall) runICERestartOnce(ctx context.Context, conn *transport.GroupConnection, pc *webrtc.PeerConnection, attempt int) bool {
+	conn.RearmICEFailed()
+
+	gc.log.Infof("[ice-restart] in-place restart attempt %d", attempt)
+	payload, err := conn.RestartICE()
+	if err != nil {
+		gc.log.Warnf("[ice-restart] CreateOffer/restart failed: %v", err)
+		return false
+	}
+
+	me, err := gc.client.GetMe()
+	if err != nil {
+		gc.log.Warnf("[ice-restart] GetMe failed: %v", err)
+		return false
+	}
+
+	updates, err := gc.client.PhoneJoinGroupCall(&telegram.PhoneJoinGroupCallParams{
+		Call:         *gc.call,
+		JoinAs:       &telegram.InputPeerUser{UserID: me.ID, AccessHash: me.AccessHash},
+		Params:       &telegram.DataJson{Data: payload},
+		Muted:        false,
+		VideoStopped: false,
+	})
+	if err != nil {
+		gc.log.Warnf("[ice-restart] PhoneJoinGroupCall failed: %v", err)
+		return false
+	}
+	serverResponse, err := extractConnectionParams(updates)
+	if err != nil {
+		gc.log.Warnf("[ice-restart] extract response: %v", err)
+		return false
+	}
+
+	if err := conn.Connect(serverResponse); err != nil {
+		gc.log.Warnf("[ice-restart] Connect: %v", err)
+		return false
+	}
+
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			gc.log.Warnf("[ice-restart] attempt %d: timed out after 3s", attempt)
+			return false
+		case <-ticker.C:
+			state := pc.ConnectionState()
+			if state == webrtc.PeerConnectionStateConnected {
+				return true
+			}
+			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+				gc.log.Warnf("[ice-restart] attempt %d: connection state %s", attempt, state)
+				return false
+			}
+		}
+	}
+}
+
+func (gc *GroupCall) leaveCallSilent() error {
+	conn := gc.connection()
+	if gc.call != nil && conn != nil {
+		_, _ = gc.client.PhoneLeaveGroupCall(*gc.call, int32(conn.OutgoingAudioSsrc()))
+	}
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
 }
 
 func (gc *GroupCall) AudioTrack() *webrtc.TrackLocalStaticRTP {
@@ -347,15 +496,27 @@ func (gc *GroupCall) VideoTrack() *webrtc.TrackLocalStaticRTP {
 }
 
 func (gc *GroupCall) Sender() *transport.Dispatcher {
-	return gc.conn.Dispatcher()
+	c := gc.connection()
+	if c == nil {
+		return nil
+	}
+	return c.Dispatcher()
 }
 
 func (gc *GroupCall) AudioSSRC() uint32 {
-	return gc.conn.OutgoingAudioSsrc()
+	c := gc.connection()
+	if c == nil {
+		return 0
+	}
+	return c.OutgoingAudioSsrc()
 }
 
 func (gc *GroupCall) VideoSSRC() uint32 {
-	return gc.conn.OutgoingVideoSsrc()
+	c := gc.connection()
+	if c == nil {
+		return 0
+	}
+	return c.OutgoingVideoSsrc()
 }
 
 // Stream sends a media source into the call, blocking until it ends or ctx is cancelled.
@@ -383,20 +544,24 @@ func (gc *GroupCall) Client() *telegram.Client { return gc.client }
 func (gc *GroupCall) Call() *telegram.InputGroupCall { return gc.call }
 
 func (gc *GroupCall) Connection() *transport.GroupConnection {
-	return gc.conn
+	return gc.connection()
 }
 
 func (gc *GroupCall) Leave() error {
 	gc.reconnMu.Lock()
 	gc.leaving = true
 	gc.reconnMu.Unlock()
-	if gc.call != nil {
-		_, err := gc.client.PhoneLeaveGroupCall(*gc.call, int32(gc.conn.OutgoingAudioSsrc()))
+	conn := gc.connection()
+	if gc.call != nil && conn != nil {
+		_, err := gc.client.PhoneLeaveGroupCall(*gc.call, int32(conn.OutgoingAudioSsrc()))
 		if err != nil {
 			gc.log.Warnf("leave group call error: %v", err)
 		}
 	}
-	return gc.conn.Close()
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
 }
 
 func (gc *GroupCall) maybeStartReconnect() {
@@ -457,7 +622,7 @@ func (gc *GroupCall) reconnectLoop(chatID any, p reconnectPolicy) {
 		gc.reconnMu.Unlock()
 
 		_ = gc.leaveCallSilent()
-		gc.conn = transport.NewGroupConnection(gc.log.With("subsystem", "transport"))
+		gc.setConnection(transport.NewGroupConnection(gc.log.With("subsystem", "transport")))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, err := gc.joinOnce(ctx, chatID, "")

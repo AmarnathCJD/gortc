@@ -52,7 +52,6 @@ type ConferenceCall struct {
 	pubKey ed25519.PublicKey
 
 	selfUID               int64
-	chainOffsets          map[int32]int32
 	lastEmojis            string
 	sourceToUID           map[int32]int64
 	flushingBroadcasts    bool

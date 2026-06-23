@@ -91,7 +91,7 @@ func (cc *ConferenceCall) Create(ctx context.Context, joinImmediately bool) (str
 // Join joins an existing conference call by its public slug.
 func (cc *ConferenceCall) Join(ctx context.Context, slug string) error {
 	cc.slug = slug
-	if err := cc.joinExisting(&telegram.InputGroupCallSlug{Slug: slug}, "slug"); err != nil {
+	if err := cc.joinExisting(ctx, &telegram.InputGroupCallSlug{Slug: slug}, "slug"); err != nil {
 		return err
 	}
 	cc.fetchParticipantSources()
@@ -100,13 +100,13 @@ func (cc *ConferenceCall) Join(ctx context.Context, slug string) error {
 
 // JoinFromInvite joins via an incoming MessageActionConferenceCall message.
 func (cc *ConferenceCall) JoinFromInvite(ctx context.Context, msgID int32) error {
-	return cc.joinExisting(&telegram.InputGroupCallInviteMessage{MsgID: msgID}, "invite")
+	return cc.joinExisting(ctx, &telegram.InputGroupCallInviteMessage{MsgID: msgID}, "invite")
 }
 
 // joinExisting is the shared shape of Join and JoinFromInvite: set up the
 // session, fetch the latest chain state, submit a self-add block, wait for the
 // server echo, attach media, and kick verification.
-func (cc *ConferenceCall) joinExisting(callInput telegram.InputGroupCall, label string) error {
+func (cc *ConferenceCall) joinExisting(ctx context.Context, callInput telegram.InputGroupCall, label string) error {
 	cc.installHandlers()
 	if err := cc.ensureSigner(); err != nil {
 		return err
@@ -141,7 +141,7 @@ func (cc *ConferenceCall) joinExisting(callInput telegram.InputGroupCall, label 
 	}
 	cc.call = call
 	cc.applyUpdates(updates)
-	if err := cc.waitForServerBlock(callInput, beforeHeight+1); err != nil {
+	if err := cc.waitForServerBlock(ctx, callInput, beforeHeight+1); err != nil {
 		cc.log.Warnf("[conf] wait for server join block (%s): %v", label, err)
 	}
 	if err := cc.unmuteSelf(); err != nil {
@@ -354,7 +354,7 @@ func (cc *ConferenceCall) RotateKey(ctx context.Context) error {
 		return err
 	}
 	cc.applyUpdates(updates)
-	if werr := cc.waitForServerBlock(call, beforeHeight+1); werr != nil {
+	if werr := cc.waitForServerBlock(context.Background(), call, beforeHeight+1); werr != nil {
 		cc.log.Warnf("[conf] rotate-key wait: %v", werr)
 	}
 	return nil
@@ -468,34 +468,11 @@ func (cc *ConferenceCall) prepareLocalMedia() error {
 	}
 	cc.attachCipherToDispatcher()
 	cc.conn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		if track.Kind() == webrtc.RTPCodecTypeAudio {
-			go cc.decodeIncomingAudio(track)
-		}
 		if cc.OnTrack != nil {
 			cc.OnTrack(media.NewIncomingTrack(track))
 		}
 	})
 	return nil
-}
-
-func (cc *ConferenceCall) decodeIncomingAudio(track *webrtc.TrackRemote) {
-	ssrc := uint32(track.SSRC())
-	for {
-		pkt, _, err := track.ReadRTP()
-		if err != nil {
-			return
-		}
-		if cc.cipher == nil || len(pkt.Payload) == 0 {
-			continue
-		}
-		pub, _, found := cc.pubKeyForSSRC(ssrc)
-		if !found {
-			continue
-		}
-		if _, derr := cc.cipher.DecryptIncomingPacket(pkt.Payload, pub); derr != nil {
-			continue
-		}
-	}
 }
 
 func (cc *ConferenceCall) attachMediaFromUpdates(updates telegram.Updates) error {
@@ -532,12 +509,18 @@ func (cc *ConferenceCall) attachCipherToDispatcher() {
 	})
 }
 
-func (cc *ConferenceCall) waitForServerBlock(call telegram.InputGroupCall, wantHeight int32) error {
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		if cc.chain.Height() >= wantHeight && len(cc.chain.ActiveEpochs()) > 0 {
-			return nil
-		}
+func (cc *ConferenceCall) waitForServerBlock(ctx context.Context, call telegram.InputGroupCall, wantHeight int32) error {
+	ready := func() bool {
+		return cc.chain.Height() >= wantHeight && len(cc.chain.ActiveEpochs()) > 0
+	}
+	if ready() {
+		return nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		updates, err := cc.client.PhoneGetGroupCallChainBlocks(call, 0, cc.chain.Height(), 10)
 		if err != nil {
 			return err
@@ -552,12 +535,18 @@ func (cc *ConferenceCall) waitForServerBlock(call telegram.InputGroupCall, wantH
 			}
 			_ = cc.chain.ApplyBlock(block)
 		}
-		if cc.chain.Height() >= wantHeight && len(cc.chain.ActiveEpochs()) > 0 {
+		if ready() {
 			return nil
 		}
-		time.Sleep(300 * time.Millisecond)
+		select {
+		case <-waitCtx.Done():
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("timed out waiting for chain height %d (have %d)", wantHeight, cc.chain.Height())
+		case <-ticker.C:
+		}
 	}
-	return fmt.Errorf("timed out waiting for chain height %d (have %d)", wantHeight, cc.chain.Height())
 }
 
 func (cc *ConferenceCall) buildJoinBlock(call telegram.InputGroupCall) (*e2e.Block, []byte, error) {

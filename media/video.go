@@ -87,6 +87,7 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 		}
 
 		payloads := payloader.Payload(mtu, frame)
+		muted := ctrl != nil && ctrl.isMuted()
 		for i, p := range payloads {
 			marker := i == len(payloads)-1
 			pkt := &webrtc.RtpPacket{
@@ -100,7 +101,9 @@ func streamIVF(send VideoSender, ssrc uint32, reader io.Reader, ctrl *playContro
 				},
 				Payload: p,
 			}
-			send.SendVideo(pkt)
+			if !muted {
+				send.SendVideo(pkt)
+			}
 			seq++
 		}
 

@@ -23,9 +23,7 @@ type oggWriter struct {
 	channels   uint8
 	preSkip    uint16
 
-	granule       uint64
-	lastTimestamp uint32
-	haveTimestamp bool
+	granule uint64
 
 	closed bool
 }
@@ -152,8 +150,6 @@ func (o *oggWriter) writePacket(p *webrtc.RtpPacket) error {
 		samples = 960
 	}
 	o.granule += samples
-	o.haveTimestamp = true
-	o.lastTimestamp = p.Timestamp
 	return o.writePage(p.Payload, o.granule, 0x00)
 }
 
@@ -192,8 +188,6 @@ func (r *OggOpusRecorder) WritePacketWithSamples(p *webrtc.RtpPacket, samples ui
 		return nil
 	}
 	o.granule += samples
-	o.haveTimestamp = true
-	o.lastTimestamp = p.Timestamp
 	return o.writePage(p.Payload, o.granule, 0x00)
 }
 

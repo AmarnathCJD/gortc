@@ -17,6 +17,7 @@ type playControl struct {
 	cond    *sync.Cond
 	paused  bool
 	stopped bool
+	muted   bool
 	elapsed time.Duration
 	base    time.Duration
 
@@ -97,6 +98,30 @@ func (c *playControl) isStopped() bool {
 	return c.stopped
 }
 
+func (c *playControl) isPaused() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paused
+}
+
+func (c *playControl) mute() {
+	c.mu.Lock()
+	c.muted = true
+	c.mu.Unlock()
+}
+
+func (c *playControl) unmute() {
+	c.mu.Lock()
+	c.muted = false
+	c.mu.Unlock()
+}
+
+func (c *playControl) isMuted() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.muted
+}
+
 type Player struct {
 	mu       sync.Mutex
 	ctrl     *playControl
@@ -109,27 +134,33 @@ type Player struct {
 	duration time.Duration
 }
 
-func (p *Player) Pause()  { p.ctrl.pause() }
-func (p *Player) Resume() { p.ctrl.resume() }
+func (p *Player) snapshot() (*playControl, context.CancelFunc, <-chan error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ctrl, p.cancel, p.done
+}
+
+func (p *Player) Pause()  { ctrl, _, _ := p.snapshot(); ctrl.pause() }
+func (p *Player) Resume() { ctrl, _, _ := p.snapshot(); ctrl.resume() }
+func (p *Player) Mute()   { ctrl, _, _ := p.snapshot(); ctrl.mute() }
+func (p *Player) Unmute() { ctrl, _, _ := p.snapshot(); ctrl.unmute() }
 
 func (p *Player) Stop() {
-	p.ctrl.stop()
-	if p.cancel != nil {
-		p.cancel()
+	ctrl, cancel, _ := p.snapshot()
+	ctrl.stop()
+	if cancel != nil {
+		cancel()
 	}
 }
 
-func (p *Player) Paused() bool {
-	p.ctrl.mu.Lock()
-	defer p.ctrl.mu.Unlock()
-	return p.ctrl.paused
-}
+func (p *Player) Paused() bool { ctrl, _, _ := p.snapshot(); return ctrl.isPaused() }
+func (p *Player) Muted() bool  { ctrl, _, _ := p.snapshot(); return ctrl.isMuted() }
 
-func (p *Player) Position() time.Duration { return p.ctrl.position() }
+func (p *Player) Position() time.Duration { ctrl, _, _ := p.snapshot(); return ctrl.position() }
 
 func (p *Player) Duration() time.Duration { return p.duration }
 
-func (p *Player) Done() <-chan error { return p.done }
+func (p *Player) Done() <-chan error { _, _, done := p.snapshot(); return done }
 
 // Seek restarts playback at the given offset from the start. It requires a
 // seekable source (FromFile/FromURL); returns ErrNotSeekable otherwise.
@@ -139,11 +170,12 @@ func (p *Player) Seek(offset time.Duration) error {
 		return ErrNotSeekable
 	}
 
-	p.ctrl.stop()
-	if p.cancel != nil {
-		p.cancel()
+	oldCtrl, oldCancel, oldDone := p.snapshot()
+	oldCtrl.stop()
+	if oldCancel != nil {
+		oldCancel()
 	}
-	<-p.done
+	<-oldDone
 
 	if offset < 0 {
 		offset = 0

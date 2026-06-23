@@ -6,15 +6,50 @@
 package transport
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/amarnathcjd/gortc/webrtc/interceptor"
 	"github.com/amarnathcjd/gortc/webrtc/webrtc"
 )
+
+var (
+	icePortRangeMu   sync.Mutex
+	icePortRangeRand [2]uint16
+)
+
+func nextICEPortRange() (uint16, uint16) {
+	icePortRangeMu.Lock()
+	defer icePortRangeMu.Unlock()
+	const windowSize = 4096
+	const base = 49152
+	const ceiling = 65535
+	var seed [2]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		return 0, 0
+	}
+	offset := uint16(binary.BigEndian.Uint16(seed[:])) % (ceiling - base - windowSize)
+	lo := base + offset
+	hi := lo + windowSize
+	if hi > ceiling {
+		hi = ceiling
+	}
+	if lo == icePortRangeRand[0] {
+		lo += 17
+		hi = lo + windowSize
+		if hi > ceiling {
+			hi = ceiling
+		}
+	}
+	icePortRangeRand = [2]uint16{lo, hi}
+	return lo, hi
+}
 
 func AudioCodecCapability() webrtc.RTPCodecCapability {
 	return webrtc.RTPCodecCapability{
@@ -117,15 +152,23 @@ func BuildInterceptorRegistry(m *webrtc.MediaEngine, log *Logger) (*interceptor.
 }
 
 func BuildSettingEngine() webrtc.SettingEngine {
+	return BuildSettingEngineWithPorts(0, 0)
+}
+
+func BuildSettingEngineWithPorts(portMin, portMax uint16) webrtc.SettingEngine {
 	se := webrtc.SettingEngine{}
 	se.SetICETimeouts(
-		30*time.Second,
-		60*time.Second,
-		2*time.Second,
+		15*time.Second,
+		25*time.Second,
+		8*time.Second,
 	)
 	se.SetSTUNGatherTimeout(8 * time.Second)
 	se.SetSrflxAcceptanceMinWait(0)
 	se.SetHandleUndeclaredSSRCWithoutAnswer(true)
+	se.SetICEMaxBindingRequests(20)
+	if portMin > 0 && portMax > 0 && portMax > portMin {
+		_ = se.SetEphemeralUDPPortRange(portMin, portMax)
+	}
 	se.SetNetworkTypes([]webrtc.NetworkType{
 		webrtc.NetworkTypeUDP4,
 		webrtc.NetworkTypeUDP6,

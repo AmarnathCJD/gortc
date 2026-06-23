@@ -29,7 +29,6 @@ type ivfWriter struct {
 	frameCount  uint64
 	wroteHeader bool
 
-	lastTimestamp      uint32
 	firstTimestamp     uint32
 	haveFirstTimestamp bool
 
@@ -103,7 +102,6 @@ func (i *ivfWriter) writePacket(p *webrtc.RtpPacket) error {
 		return err
 	}
 	i.frameCount++
-	i.lastTimestamp = p.Timestamp
 	return nil
 }
 

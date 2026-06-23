@@ -6,6 +6,7 @@
 package confcall
 
 import (
+	"context"
 	"crypto/ed25519"
 	"fmt"
 
@@ -90,24 +91,6 @@ func (cc *ConferenceCall) fetchParticipantSources() {
 	cc.recordParticipantSources(resp.Participants)
 }
 
-// pubKeyForSSRC: SSRC -> user_id (server participant table) -> ed25519 pubkey (chain).
-func (cc *ConferenceCall) pubKeyForSSRC(ssrc uint32) (ed25519.PublicKey, int64, bool) {
-	cc.mu.Lock()
-	uid, ok := cc.sourceToUID[int32(ssrc)]
-	cc.mu.Unlock()
-	if !ok || cc.chain == nil {
-		return nil, 0, false
-	}
-	for _, p := range cc.chain.Snapshot().Participants {
-		if p.UserID == uid {
-			pk := make(ed25519.PublicKey, len(p.PublicKey))
-			copy(pk, p.PublicKey)
-			return pk, uid, true
-		}
-	}
-	return nil, uid, false
-}
-
 func peerUserID(p telegram.Peer) int64 {
 	switch v := p.(type) {
 	case *telegram.PeerUser:
@@ -146,12 +129,6 @@ func (cc *ConferenceCall) applyUpdate(upd telegram.Update) {
 }
 
 func (cc *ConferenceCall) applyIncomingChainUpdate(upd *telegram.UpdateGroupCallChainBlocks) {
-	cc.mu.Lock()
-	if cc.chainOffsets == nil {
-		cc.chainOffsets = make(map[int32]int32)
-	}
-	cc.chainOffsets[upd.SubChainID] = upd.NextOffset
-	cc.mu.Unlock()
 	cc.applyIncomingBlocks(upd.Blocks)
 }
 
@@ -255,7 +232,7 @@ func (cc *ConferenceCall) reestablishKeyIfExcluded() {
 		return
 	}
 	cc.applyUpdates(updates)
-	if werr := cc.waitForServerBlock(call, beforeHeight+1); werr != nil {
+	if werr := cc.waitForServerBlock(context.Background(), call, beforeHeight+1); werr != nil {
 		cc.log.Warnf("[conf] reestablish key wait: %v", werr)
 	}
 }
