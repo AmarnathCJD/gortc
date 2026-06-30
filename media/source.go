@@ -10,11 +10,35 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+type ringBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func (r *ringBuffer) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf = append(r.buf, p...)
+	if len(r.buf) > r.max {
+		r.buf = r.buf[len(r.buf)-r.max:]
+	}
+	return len(p), nil
+}
+
+func (r *ringBuffer) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return string(r.buf)
+}
 
 // ErrNotSeekable is returned by Player.Seek when the source cannot seek (e.g.
 // reader or pre-encoded sources). Only FromFile/FromURL are seekable.
@@ -288,7 +312,8 @@ func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, e
 		if s.stdin != nil {
 			cmd.Stdin = s.stdin
 		}
-		cmd.Stderr = nil
+		stderr := &ringBuffer{max: 4096}
+		cmd.Stderr = stderr
 		out, err := cmd.StdoutPipe()
 		if err != nil {
 			return nil, err
@@ -297,7 +322,17 @@ func (s *transcodeSource) open(ctx context.Context, input []string) (*Streams, e
 			return nil, err
 		}
 		procs = append(procs, cmd)
-		go func() { _ = cmd.Wait() }()
+		go func() {
+			err := cmd.Wait()
+			if err != nil && ctx.Err() == nil {
+				tail := stderr.String()
+				if tail != "" {
+					fmt.Fprintf(os.Stderr, "[gortc/media] ffmpeg exited: %v\n--- ffmpeg stderr (last %d bytes) ---\n%s\n--- end ---\n", err, len(tail), tail)
+				} else {
+					fmt.Fprintf(os.Stderr, "[gortc/media] ffmpeg exited: %v (no stderr)\n", err)
+				}
+			}
+		}()
 		return out, nil
 	}
 
